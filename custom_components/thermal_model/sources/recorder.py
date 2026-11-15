@@ -26,7 +26,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-__all__ = ["HistorySeries", "async_read_states", "state_is_heating"]
+__all__ = ["HistorySeries", "async_read_states"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,27 +53,6 @@ class HistorySeries:
             return 0.0
         present = sum(1 for _moment, value in self.points if value is not None)
         return present / len(self.points)
-
-
-def state_is_heating(state: Any) -> bool:
-    """Whether a heating entity state means "delivering heat right now".
-
-    Per family, because the domains disagree: a ``climate`` in ``heat`` mode may be
-    idle (its state is the HVAC *mode*, not the action), a ``water_heater`` reports
-    its operation mode, and a switch is simply on or off.
-    """
-    if state is None:
-        return False
-    domain = state.entity_id.split(".", 1)[0]
-    attributes = state.attributes or {}
-    if domain == "climate":
-        return str(attributes.get("hvac_action", "")).lower() == "heating"
-    if domain == "water_heater":
-        operation = str(attributes.get("current_operation", "")).lower()
-        if operation:
-            return operation not in ("off", "idle", "eco", "performance")
-        return state.state not in ("off", "unavailable", "unknown", "")
-    return state.state in ("on", "heat", "auto", "heating")
 
 
 def _numeric(value: Any) -> float | None:
@@ -142,10 +121,7 @@ def async_read_states(
                     continue
                 if changed > moment:
                     break
-                if entity_id.startswith(("climate.", "water_heater.", "switch.", "input_boolean.")):
-                    last_value = 1.0 if state_is_heating(states[index]) else 0.0
-                else:
-                    last_value = _numeric(states[index].state)
+                last_value = _numeric(states[index].state)
                 index += 1
             points.append((moment, last_value))
         result[entity_id] = HistorySeries(points, step_minutes)

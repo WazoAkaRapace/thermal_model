@@ -20,7 +20,6 @@ from .const import (
     CONF_CAPACITY,
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
-    CONF_HEATING_ENTITY,
     CONF_HISTORY_DAYS,
     CONF_HORIZON_HOURS,
     CONF_INDOOR_SENSOR,
@@ -57,7 +56,6 @@ _LOGGER = logging.getLogger(__name__)
 class SourceBinding:
     """The entities the model is built from."""
 
-    heating_entity: str
     indoor_sensor: str
     outdoor_sensor: str
 
@@ -90,8 +88,6 @@ class ThermalModelRuntimeData:
     options: dict[str, Any] = field(default_factory=dict)
     entry_data: dict[str, Any] = field(default_factory=dict)
     identification: Any = None  # IdentificationOutcome, imported lazily
-    power_options: list[str] = field(default_factory=list)
-    selected_power_sensor: str | None = None
     scenarios: tuple[ModelScenario, ...] = ()
     # Last successful run per scenario, kept so a diverging simulation never blanks
     # the entities it already published.
@@ -140,7 +136,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     runtime = ThermalModelRuntimeData(
         sources=SourceBinding(
-            heating_entity=data[CONF_HEATING_ENTITY],
             indoor_sensor=data[CONF_INDOOR_SENSOR],
             outdoor_sensor=data[CONF_OUTDOOR_SENSOR],
         ),
@@ -183,7 +178,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime.missing_entities = {
         entity_id
         for entity_id in (
-            runtime.sources.heating_entity,
             runtime.sources.indoor_sensor,
             runtime.sources.outdoor_sensor,
         )

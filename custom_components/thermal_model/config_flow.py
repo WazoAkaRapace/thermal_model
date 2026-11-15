@@ -14,7 +14,6 @@ from homeassistant.util import slugify
 from .const import (
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
-    CONF_HEATING_ENTITY,
     CONF_HEATING_POWER_SENSOR,
     CONF_HISTORY_DAYS,
     CONF_INDOOR_SENSOR,
@@ -34,7 +33,6 @@ from .const import (
     DEFAULT_SMOOTH_HOURS,
     DEFAULT_TAU_GRACE_MINUTES,
     DOMAIN_KEY,
-    HEATING_DOMAINS,
     MAX_DT_MINUTES,
     MAX_HISTORY_DAYS,
     MAX_RETENTION_DAYS,
@@ -68,11 +66,6 @@ def _looks_like_temperature(hass: HomeAssistant, entity_id: str) -> bool | None:
 def _validate_sources(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate the three mandatory entities (genericity rules live here)."""
     errors: dict[str, str] = {}
-
-    heating = str(user_input.get(CONF_HEATING_ENTITY, ""))
-    domain = heating.split(".", 1)[0] if "." in heating else ""
-    if domain not in HEATING_DOMAINS:
-        errors[CONF_HEATING_ENTITY] = "unsupported_heating_entity"
 
     for key in (CONF_HEATING_POWER_SENSOR, CONF_IRRADIANCE_SENSOR):
         provided = user_input.get(key)
@@ -188,11 +181,13 @@ _MEASUREMENT_FIELDS: dict[str, Any] = {
 
 
 def _sources_schema(defaults: dict[str, Any]) -> vol.Schema:
-    """The three mandatory entities, plus the two measurements when the user has them."""
+    """The two temperature sensors, plus the two measurements when the user has them.
+
+    The heating entity was removed: it was bound at setup but the identification
+    never read it. The heating input is the meter the user configures; without one
+    the integration says so instead of guessing.
+    """
     fields: dict[Any, Any] = {
-        vol.Required(
-            CONF_HEATING_ENTITY, default=defaults.get(CONF_HEATING_ENTITY, vol.UNDEFINED)
-        ): selector.EntitySelector(selector.EntitySelectorConfig(domain=list(HEATING_DOMAINS))),
         vol.Required(
             CONF_INDOOR_SENSOR, default=defaults.get(CONF_INDOOR_SENSOR, vol.UNDEFINED)
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),

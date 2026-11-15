@@ -44,7 +44,7 @@ from .core.identify import IdentificationError, IdentificationSettings, identify
 from .sources import WeatherError, fetch_past_weather
 from .sources.statistics import StatisticPoint, async_read_statistics
 
-__all__ = ["ModelInputs", "build_inputs", "indoor_candidates", "power_candidates"]
+__all__ = ["ModelInputs", "build_inputs"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,7 +89,6 @@ class ModelInputs:
     indoor_sources: list[str] = field(default_factory=list)
     heating_power_sensor: str | None = None
     solar_source: str = "open_meteo_past"
-    power_options: list[str] = field(default_factory=list)
     energy_sensor: str | None = None
     daily_k: DailyKResult | None = None
     daily_model: DailyModelResult | None = None
@@ -108,139 +107,15 @@ def _points(series: dict[str, list[StatisticPoint]]) -> dict[str, dict[datetime,
     }
 
 
-def indoor_candidates(values: dict[str, dict[datetime, float]], exclude: set[str]) -> list[str]:
-    """Indoor thermometers among the given statistic series.
-
-    Statistical, not nominal: a room temperature stays in a narrow band over a month.
-    """
-    selected: list[tuple[float, str]] = []
-    for statistic_id, points in values.items():
-        if statistic_id in exclude:
-            continue
-        lowered = statistic_id.lower()
-        if any(token in lowered for token in _NOT_A_ROOM):
-            continue
-        readings = list(points.values())
-        if len(readings) < 24 * MIN_INDOOR_DAYS:
-            continue
-        mean = statistics.fmean(readings)
-        spread = statistics.pstdev(readings)
-        if not (ROOM_BAND[0] <= mean <= ROOM_BAND[1]):
-            continue
-        if spread > ROOM_MAX_SPREAD:
-            continue
-        selected.append((spread, statistic_id))
-    # the most stable first: a room follows the house, a device follows its own heat
-    selected.sort()
-    return [statistic_id for _spread, statistic_id in selected[:MAX_INDOOR_SENSORS]]
-
-
-def _correlation(left: list[float], right: list[float]) -> float:
-    """Pearson correlation, 0 when either series is flat."""
-    if len(left) != len(right) or len(left) < 3:
-        return 0.0
-    mean_left = statistics.fmean(left)
-    mean_right = statistics.fmean(right)
-    covariance = sum((a - mean_left) * (b - mean_right) for a, b in zip(left, right, strict=False))
-    spread_left = sum((a - mean_left) ** 2 for a in left) ** 0.5
-    spread_right = sum((b - mean_right) ** 2 for b in right) ** 0.5
-    if spread_left == 0 or spread_right == 0:
-        return 0.0
-    return covariance / (spread_left * spread_right)
-
-
-def looks_like_a_sun_meter(values: dict[datetime, float], solar: dict[datetime, float]) -> bool:
-    """Whether a power series is production, not heating.
-
-    A heating meter never follows the sun: when irradiance is high the house needs
-    less heat, not more. Measured on a real installation, the meter the fit preferred
-    was an inverter's PV string — the solar regressor was already in the model, so the
-    fit found the same signal twice and looked excellent.
-    """
-    both = [(moment, value) for moment, value in sorted(values.items()) if moment in solar]
-    if len(both) < 24 * 2:
-        return False
-    daytime = [value for moment, value in both if solar[moment] > 50.0]
-    night = [value for moment, value in both if solar[moment] <= 50.0]
-    if not daytime or not night:
-        return False
-    day_mean = statistics.fmean(daytime)
-    night_mean = statistics.fmean(night)
-    # produces when the sun is up and stops at night: that is a solar meter
-    return day_mean > 0.2 and day_mean > 2.5 * max(night_mean, 0.05)
-
-
-def power_candidates(
-    values: dict[str, dict[datetime, float]],
-    exclude: set[str],
-    unit_of: dict[str, str | None] | None = None,
-    indoor: dict[datetime, float] | None = None,
-    outdoor: dict[datetime, float] | None = None,
-    solar: dict[datetime, float] | None = None,
-) -> list[str]:
-    """Power meters worth trying as the heating input, most variable first.
-
-    Values are normalised to kW before the plausibility filter, because the recorder
-    stores what the sensor reported: a 2400 W meter is a 2.4 kW house load, not a
-    2400 kW one.
-    """
-    unit_of = unit_of or {}
-    scored: list[tuple[float, str]] = []
-    for statistic_id, points in values.items():
-        if statistic_id in exclude:
-            continue
-        readings = list(_kw(points, unit_of.get(statistic_id)).values())
-        if len(readings) < 24 * 3:
-            continue
-        peak = max(readings)
-        # kW: a house heating draws at least a few hundred watts when it runs, and
-        # nothing above 20 kW. Without this floor the fit picked a 50 W ventilation
-        # meter, which cannot heat anything but happened to track the weather.
-        if peak < 0.8 or peak > 20.0:
-            continue
-        if solar and looks_like_a_sun_meter(dict(points), solar):
-            continue
-        scored.append((statistics.pvariance(readings), statistic_id))
-    scored.sort(reverse=True)
-    chosen = [statistic_id for _variance, statistic_id in scored[:MAX_POWER_CANDIDATES]]
-
-    # A heating meter rises when the house cools. Variance alone is a bad ranking: on
-    # a real installation the most variable meters were solar inverters and grid
-    # meters, and the heat pump was not among them.
-    if indoor:
-        inverse: list[tuple[float, str]] = []
-        for statistic_id, points in values.items():
-            if statistic_id in exclude or statistic_id in chosen:
-                continue
-            both = [(moment, value) for moment, value in sorted(points.items()) if moment in indoor]
-            if len(both) < 24 * 3:
-                continue
-            correlation = _correlation(
-                [
-                    _kw({moment: value}, unit_of.get(statistic_id)).get(moment, value)
-                    for moment, value in both
-                ],
-                [indoor[moment] for moment, _value in both],
-            )
-            if correlation < -0.1:
-                inverse.append((correlation, statistic_id))
-        inverse.sort()
-        chosen.extend(
-            statistic_id for _correlation_value, statistic_id in inverse[:MAX_INVERSE_CANDIDATES]
-        )
-    return chosen
-
-
 async def _series_for_sensor(hass: HomeAssistant, sensor: str, days: int) -> dict[datetime, float]:
     """Hourly values for a sensor, from statistics or, failing that, from raw history.
 
     A sensor without ``state_class`` never gets long-term statistics — measured on a
     real installation: 949 states over 10 days, 0 statistics — and the identification
-    must not silently replace the sensor the user chose with a mean of every
-    thermometer in the house. Raw history only survives the recorder purge, but a week
-    of the right sensor beats three weeks of the wrong series.
+    must not ignore the sensor the user chose for that reason. Raw history only
+    survives the recorder purge, but a week of the right sensor beats three weeks of
+    the wrong series.
     """
-
     from .sources.recorder import async_collect
 
     series = await async_read_statistics(hass, [sensor], days)
@@ -314,7 +189,6 @@ async def build_inputs(
     *,
     indoor_sensor: str,
     outdoor_sensor: str,
-    heating_entity: str,
     days: int,
     power_sensor: str | None = None,
     irradiance_sensor: str | None = None,
@@ -323,7 +197,7 @@ async def build_inputs(
     settings: IdentificationSettings | None = None,
     runtime_tunables: dict[str, float] | None = None,
 ) -> tuple[ModelInputs, Any]:
-    """Assemble the series and pick the best heating-power candidate.
+    """Assemble the series from the sensors the user actually configured.
 
     Returns the inputs and the identification result when one was fitted for the
     winning power candidate (the caller re-runs it to keep this function honest about
@@ -368,40 +242,11 @@ async def build_inputs(
         indoor_series[indoor_sensor] = indoor_points
         indoor_sources = [indoor_sensor]
     else:
-        # The bound sensor is too young (a freshly created mean helper, typically):
-        # use the thermometers the recorder already knows.
-        all_ids = sorted(
-            {
-                state.entity_id
-                for state in hass.states.async_all("sensor")
-                if state.attributes.get("device_class") == "temperature"
-            }
-            - wanted
+        inputs.reasons.append(
+            f"le capteur intérieur {indoor_sensor} n'a pas assez d'historique "
+            f"(minimum {MIN_INDOOR_DAYS} jours)"
         )
-        discovered = await async_read_statistics(hass, all_ids, days)
-        candidates = indoor_candidates(_points(discovered), exclude=wanted)
-        indoor_series = {
-            candidate: _points(discovered)[candidate]
-            for candidate in candidates
-            if candidate in discovered
-        }
-        indoor_sources = list(indoor_series)
-        if not indoor_series:
-            inputs.reasons.append(
-                "le capteur intérieur n'a pas d'historique et aucun thermomètre "
-                "exploitable n'a été trouvé (minimum 5 jours de statistiques horaires)"
-            )
-            return inputs, None
-        if indoor_points:
-            history = (
-                f"{len(indoor_points) // 24} jour(s)"
-                if len(indoor_points) >= 24
-                else f"{len(indoor_points)} heure(s)"
-            )
-            inputs.reasons.append(
-                f"le capteur intérieur {indoor_sensor} n'a que {history} d'historique : "
-                f"moyenne de {len(indoor_series)} thermomètre(s) à la place"
-            )
+        return inputs, None
 
     hours, tin = _mean_series(indoor_series)
     hours = [hour for hour in hours if hour in outdoor_points]
@@ -436,29 +281,20 @@ async def build_inputs(
     inputs.solar_source = solar_source
 
     if not power_options:
-        every_power = sorted(
-            {
-                state.entity_id
-                for state in hass.states.async_all("sensor")
-                if state.attributes.get("device_class") == "power"
-            }
-            - wanted
+        # No meter was configured. The heating is simply unknown: guessing one
+        # ("the most variable meter", "the one that follows the indoor-outdoor gap",
+        # then "the one that fits best") was tried and measured on a real
+        # installation — it picked a solar inverter, and a plausible-looking fit with
+        # the wrong physics is worse than an honest refusal.
+        inputs.reasons.append(
+            "aucun compteur de puissance ou d'énergie de chauffe configuré : "
+            "l'apport de chauffe ne peut pas être identifié"
         )
-        discovered_power = await async_read_statistics(hass, every_power, days)
-        units = {
-            entity_id: (
-                hass.states.get(entity_id).attributes.get("unit_of_measurement")
-                if hass.states.get(entity_id) is not None
-                else None
-            )
-            for entity_id in every_power
-        }
-        power_options = power_candidates(_points(discovered_power), exclude=wanted, unit_of=units)
+        return inputs, None
 
-    inputs.power_options = list(power_options)
-
-    # Phase 2: let the identifier choose the heating input. A house has a dozen power
-    # meters; the one that explains the measured temperature is the heating.
+    # Phase 2: the configured meter is the heating input. If it is a power meter the
+    # hourly fit runs on it; the kWh counter of the same device can still finish k
+    # through the daily balance, which survives a modulating heat pump.
     best: tuple[float, str, Any, list[float], Any] | None = None
     best_without_k: tuple[float, str, Any, list[float]] | None = None
     failures: list[str] = []

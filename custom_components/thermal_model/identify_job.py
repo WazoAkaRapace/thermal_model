@@ -122,19 +122,15 @@ async def async_identify_model(
         options.get(CONF_LONGITUDE, entry_data.get(CONF_LONGITUDE, hass.config.longitude))
     )
 
-    # An explicit choice wins over detection: the select entity, then the entry
-    # option, then whatever the setup flow stored in the entry data.
-    chosen_by_user = (
-        runtime.selected_power_sensor
-        or options.get(CONF_HEATING_POWER_SENSOR)
-        or entry_data.get(CONF_HEATING_POWER_SENSOR)
+    # The heating meter is a configuration decision, never a guess.
+    chosen_by_user = options.get(CONF_HEATING_POWER_SENSOR) or entry_data.get(
+        CONF_HEATING_POWER_SENSOR
     )
 
     inputs, result = await build_inputs(
         hass,
         indoor_sensor=runtime.sources.indoor_sensor,
         outdoor_sensor=runtime.sources.outdoor_sensor,
-        heating_entity=runtime.sources.heating_entity,
         days=days,
         power_sensor=chosen_by_user,
         irradiance_sensor=options.get(CONF_IRRADIANCE_SENSOR)
@@ -145,8 +141,6 @@ async def async_identify_model(
         runtime_tunables=runtime.tunables,
     )
 
-    # Publish the candidates so the select entity can offer them.
-    runtime.power_options = list(inputs.power_options)
     notes = tuple(inputs.reasons)
     daily_model = inputs.daily_model
     if daily_model is not None and daily_model.ok and daily_model.params is not None:

@@ -63,7 +63,6 @@ async def test_setup_tolerates_missing_entities(hass: HomeAssistant) -> None:
 
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data.missing_entities == {
-        "climate.living_room",
         "sensor.indoor_temperature",
         "sensor.outdoor_temperature",
     }
@@ -89,7 +88,6 @@ async def test_options_override_data(hass: HomeAssistant, temperature_entities: 
 @pytest.mark.parametrize(
     ("missing_entity", "replacement"),
     [
-        ("climate.missing", {"heating_entity": "climate.missing"}),
         ("sensor.missing", {"indoor_sensor": "sensor.missing"}),
     ],
 )

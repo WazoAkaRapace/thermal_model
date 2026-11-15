@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType, InvalidData
+from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.thermal_model.config_flow import _validate_sources
 from custom_components.thermal_model.const import (
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
-    CONF_HEATING_ENTITY,
     CONF_HEATING_POWER_SENSOR,
     CONF_HISTORY_DAYS,
     CONF_INDOOR_SENSOR,
@@ -29,7 +26,6 @@ from custom_components.thermal_model.const import (
 
 USER_INPUT = {CONF_NAME: "Home", CONF_LATITUDE: 45.92, CONF_LONGITUDE: 0.92}
 SOURCES_INPUT = {
-    CONF_HEATING_ENTITY: "climate.living_room",
     CONF_INDOOR_SENSOR: "sensor.indoor_temperature",
     CONF_OUTDOOR_SENSOR: "sensor.outdoor_temperature",
 }
@@ -66,7 +62,6 @@ async def test_user_flow_creates_entry(hass: HomeAssistant, temperature_entities
     result = await hass.config_entries.flow.async_configure(result["flow_id"], WINDOW_INPUT)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Home"
-    assert result["data"][CONF_HEATING_ENTITY] == "climate.living_room"
     assert result["data"][CONF_SMOOTH_HOURS] == 2.0
 
 
@@ -87,30 +82,6 @@ async def test_rejects_non_temperature_sensor(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "sources"
     assert result["errors"] == {CONF_INDOOR_SENSOR: "not_a_temperature_sensor"}
-
-
-async def test_rejects_unsupported_heating_domain(
-    hass: HomeAssistant, temperature_entities: None
-) -> None:
-    """A light is not a heater: the entity selector refuses it before the handler."""
-    hass.states.async_set("light.desk", "on")
-
-    result = await _start(hass)
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
-
-    with pytest.raises(InvalidData):
-        await hass.config_entries.flow.async_configure(
-            result["flow_id"], {**SOURCES_INPUT, CONF_HEATING_ENTITY: "light.desk"}
-        )
-
-
-def test_validate_sources_rule_is_enforced_in_code_too(
-    hass: HomeAssistant, temperature_entities: None
-) -> None:
-    """Defence in depth: the validator itself rejects a non-heating domain too."""
-    errors = _validate_sources(hass, {**SOURCES_INPUT, CONF_HEATING_ENTITY: "light.desk"})
-    assert errors == {CONF_HEATING_ENTITY: "unsupported_heating_entity"}
-    assert _validate_sources(hass, SOURCES_INPUT) == {}
 
 
 async def test_rejects_unknown_entity(hass: HomeAssistant, temperature_entities: None) -> None:
@@ -134,35 +105,6 @@ async def test_rejects_identical_sensors(hass: HomeAssistant, temperature_entiti
     )
 
     assert result["errors"] == {CONF_OUTDOOR_SENSOR: "same_entity"}
-
-
-@pytest.mark.parametrize(
-    ("domain", "entity_id", "attributes"),
-    [
-        ("switch", "switch.boiler", {"device_class": "heat"}),
-        ("water_heater", "water_heater.tank", {"current_operation": "heat_pump"}),
-        ("input_boolean", "input_boolean.zone", {}),
-    ],
-)
-async def test_accepts_all_heating_families(
-    hass: HomeAssistant,
-    temperature_entities: None,
-    domain: str,
-    entity_id: str,
-    attributes: dict[str, str],
-) -> None:
-    """switch, water_heater and input_boolean are first-class heating sources."""
-    hass.states.async_set(entity_id, "on", attributes)
-
-    result = await _start(hass)
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {**SOURCES_INPUT, CONF_HEATING_ENTITY: entity_id}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "window"
-    assert "errors" not in result or not result["errors"]
 
 
 async def test_accepts_sensor_that_is_not_reporting_yet(

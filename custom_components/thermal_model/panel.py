@@ -129,7 +129,6 @@ def panel_config(
         "indoor_entity": _entity_id(hass, "sensor", f"{DOMAIN_KEY}_{entry_id}_indoor_temperature"),
         "source_indoor_entity": runtime.sources.indoor_sensor,
         "source_outdoor_entity": runtime.sources.outdoor_sensor,
-        "heating_entity": runtime.sources.heating_entity,
         "scenarios": scenarios,
         "numbers": numbers,
     }
