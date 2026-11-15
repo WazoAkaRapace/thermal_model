@@ -16,6 +16,7 @@ import {
   UPLOT_VERSION,
   buildAxes,
   buildChartData,
+  buildPanels,
   buildSeriesConfig,
   summarise,
   parseHistoryRows,
@@ -254,6 +255,58 @@ equal(
   6,
   "every history point must land on the axis",
 );
+
+// -- panels: several readable charts, not one giant one -----------------
+const { panels } = buildPanels({ history, forecasts, nowMs: NOW });
+
+equal(
+  panels.map((panel) => panel.id),
+  ["indoor", "past", "outdoor"],
+  "panel layout changed",
+);
+check(
+  panels.every((panel) => panel.unit === "°C"),
+  "every panel must carry its unit",
+);
+for (const panel of panels) {
+  check(panel.title.length > 0, `panel ${panel.id} has no title`);
+  check(panel.series.length > 0, `panel ${panel.id} has no series`);
+}
+
+const panelById = Object.fromEntries(panels.map((panel) => [panel.id, panel]));
+equal(
+  panelById.indoor.series.map((entry) => entry.id).sort(),
+  ["free_float", "measured", "thermostat"],
+  "the indoor panel must hold the current trajectories only",
+);
+check(
+  !panelById.indoor.series.some((entry) => entry.scale === "out"),
+  "the outdoor series must not share the indoor panel",
+);
+equal(
+  panelById.past.series.filter((entry) => entry.id.includes(ARCHIVED_PREFIX)).length,
+  1,
+  "the past panel must hold the archived runs",
+);
+check(
+  panelById.past.series.some((entry) => entry.id === "measured"),
+  "the past panel is useless without the measured reference",
+);
+equal(
+  panelById.outdoor.series.map((entry) => entry.id).sort(),
+  ["outdoor_forecast", "outdoor_measured"],
+  "the outdoor panel must hold both outdoor series",
+);
+check(
+  panels.every((panel) => panel.series.length <= 4),
+  "a panel with more than four series stops being readable",
+);
+
+// -- axes carry their unit ---------------------------------------------
+const indoorAxes = buildAxes(panelById.indoor.series, "°C");
+equal(indoorAxes.length, 2, "an indoor-only panel needs two axes (time + temperature)");
+equal(indoorAxes[1].label, "°C", "the temperature axis must be labelled with its unit");
+equal(indoorAxes[1].values(null, [19, 20, 21]), ["19", "20", "21"], "tick formatting changed");
 
 // -- degenerate input -------------------------------------------------
 const empty = buildChartData({ history: { indoor: [], outdoor: [] }, forecasts: {}, nowMs: NOW });

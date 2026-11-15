@@ -1,32 +1,36 @@
 /**
  * Thermal Model — sidebar panel.
  *
- * The chart itself is uPlot (vendored, MIT, 51 KB — see VENDOR.md): axes with
- * time ticks, a shared cursor, a clickable legend, drag-to-zoom, high-DPI and gap
- * handling all come from the library instead of being re-implemented. This file
- * only owns what is specific to the integration: which series to feed it, the
- * header, the stale/history banners and the parameter chips.
+ * Several small charts, not one giant one. A single figure holding every series
+ * (eleven of them, two y scales) cannot be read: the eye cannot match a dashed
+ * line to its scenario, and the outdoor range drags the indoor range. Each panel
+ * therefore answers one question, and they share the same time axis and the same
+ * colours so they line up and a series is recognisable across panels. Their
+ * cursors are synced, so hovering one shows the same instant everywhere.
  *
- * The data/axis plumbing lives in thermal-model-chart.mjs so it can be tested
- * with node, without a browser.
+ * The chart itself is uPlot (vendored, MIT — see VENDOR.md). The data and panel
+ * layout live in thermal-model-chart.mjs so they can be tested with node.
  */
 
 import {
   UPLOT_VERSION,
   ARCHIVED_PREFIX,
   buildAxes,
-  buildChartData,
+  buildPanels,
   buildSeriesConfig,
   parseHistoryRows,
   summarise,
   temperatureRange,
-  toMillis,
 } from "./thermal-model-chart.mjs";
 
-const CHART_HEIGHT = 360;
+const PANEL_HEIGHT = 200;
 const HISTORY_REFRESH_MS = 5 * 60 * 1000;
 const PAST_HOURS = 48;
 const FUTURE_HOURS = 48;
+const CURSOR_KEY = "thermal-model";
+// Fixed order: a chart must not jump position when the history arrives or when an
+// archived run appears.
+const PANEL_ORDER = ["indoor", "past", "outdoor"];
 
 const CSS = `
   :host { display: block; height: 100%; background: var(--primary-background-color); }
@@ -41,6 +45,13 @@ const CSS = `
   }
   h1 { font-size: 1.35rem; margin: 0 0 4px; font-weight: 500; color: var(--primary-text-color); }
   .sub { color: var(--secondary-text-color); font-size: 0.85rem; }
+  .panel-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .panel-title { font-size: 0.98rem; font-weight: 600; color: var(--primary-text-color); }
+  .panel-unit {
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--secondary-text-color); border: 1px solid var(--divider-color);
+    border-radius: 999px; padding: 1px 7px;
+  }
   .row { display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; }
   .stat { display: flex; flex-direction: column; min-width: 92px; }
   .stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--secondary-text-color); }
@@ -93,10 +104,10 @@ class ThermalModelPanel extends HTMLElement {
     this._historyError = null;
     this._historyTimer = null;
     this._loading = false;
-    this._chart = null;
-    this._signature = null;
+    this._charts = new Map(); // panel id -> { chart, signature, target, observer }
     this._uplotPromise = null;
     this._shellBuilt = false;
+    this._lastX = [];
   }
 
   set panel(panel) {
@@ -111,41 +122,18 @@ class ThermalModelPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    this._onResize = () => {
-      const width = this._chartTarget ? this._chartTarget.clientWidth : 0;
-      if (width <= 0) return;
-      if (this._chart && Math.abs(width - this._width) > 4) {
-        this._width = width;
-        this._chart.setSize({ width, height: CHART_HEIGHT });
-      } else if (!this._chart) {
-        // The first render happened while the element had no layout yet (Home
-        // Assistant creates the element, sets its properties, then appends it).
-        this._update();
-      }
-    };
-    window.addEventListener("resize", this._onResize);
-    // A window resize event is not enough: the panel is attached and laid out
-    // after its properties are set, so the first chart can be built at width 0.
-    if (typeof ResizeObserver === "function") {
-      this._observer = new ResizeObserver(() => this._onResize());
-    }
     this._historyTimer = window.setInterval(() => this._loadHistory(), HISTORY_REFRESH_MS);
     this._loadHistory();
     this._update();
-    if (this._observer && this._chartTarget) this._observer.observe(this._chartTarget);
   }
 
   disconnectedCallback() {
-    window.removeEventListener("resize", this._onResize);
-    if (this._observer) {
-      this._observer.disconnect();
-      this._observer = null;
-    }
     if (this._historyTimer) window.clearInterval(this._historyTimer);
-    if (this._chart) {
-      this._chart.destroy();
-      this._chart = null;
+    for (const entry of this._charts.values()) {
+      if (entry.observer) entry.observer.disconnect();
+      if (entry.chart) entry.chart.destroy();
     }
+    this._charts.clear();
   }
 
   // -- data -----------------------------------------------------------
@@ -213,81 +201,123 @@ class ThermalModelPanel extends HTMLElement {
     return this._uplotPromise;
   }
 
-  async _updateChart(data) {
-    if (!data.x.length || !data.series.length) {
-      this._chartTarget.innerHTML = `<div class="empty">Aucune donnée à afficher pour l'instant.</div>`;
+  _panelCard(panel) {
+    let card = this._cards.get(panel.id);
+    if (card) return card;
+
+    card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="panel-head">
+        <span class="panel-title">${escapeHtml(panel.title)}</span>
+        <span class="panel-unit">${escapeHtml(panel.unit)}</span>
+        <span class="sub">${escapeHtml(panel.subtitle || "")}</span>
+      </div>
+      <div class="chart"></div>`;
+    const rank = PANEL_ORDER.indexOf(panel.id);
+    const before = [...this._cards.entries()].find(
+      ([id]) => PANEL_ORDER.indexOf(id) > rank,
+    );
+    this._chartHost.insertBefore(card, before ? before[1] : null);
+    this._cards.set(panel.id, card);
+    return card;
+  }
+
+  async _renderPanels(x, panels) {
+    if (!x.length || !panels.length) {
+      this._chartHost.innerHTML = `<div class="card"><div class="empty">Aucune donnée à afficher pour l'instant.</div></div>`;
       return;
     }
-
-    // Building a chart at width 0 draws nothing and leaves nothing to look at:
-    // wait for the ResizeObserver to report a real size.
-    const measured = (this._chartTarget && this._chartTarget.clientWidth) || 0;
-    if (measured <= 0 && !this._chart) return;
+    const measuredWidth = (this._chartHost && this._chartHost.clientWidth) || 0;
+    if (measuredWidth <= 0 && this._charts.size === 0) return; // wait for layout
 
     const uPlot = await this._ensureUplot();
-    const width = Math.max(320, measured || this._width || 900);
-    this._width = width;
+    const width = Math.max(320, measuredWidth || 900);
+    this._lastX = x;
 
-    const signature = data.series.map((entry) => entry.id).join("|");
-    if (this._chart && signature !== this._signature) {
-      this._chart.destroy();
-      this._chart = null;
+    for (const panel of panels) {
+      const card = this._panelCard(panel);
+      const target = card.querySelector(".chart");
+      const signature = panel.series.map((entry) => entry.id).join("|");
+      let state = this._charts.get(panel.id);
+
+      if (state && state.signature !== signature) {
+        if (state.observer) state.observer.disconnect();
+        state.chart.destroy();
+        this._charts.delete(panel.id);
+        state = undefined;
+      }
+
+      const columns = [x, ...panel.series.map((entry) => entry.values)];
+
+      if (state) {
+        state.chart.setData(columns);
+        if (Math.abs(state.chart.width - width) > 4) {
+          state.chart.setSize({ width, height: PANEL_HEIGHT });
+        }
+        continue;
+      }
+
+      target.innerHTML = "";
+      const nowMarker = {
+        hooks: {
+          draw: (u) => {
+            const { ctx } = u;
+            const position = u.valToPos(Date.now() / 1000, "x");
+            if (!Number.isFinite(position)) return;
+            ctx.save();
+            ctx.strokeStyle = "#e53935";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 4]);
+            ctx.beginPath();
+            ctx.moveTo(position, u.bbox.top);
+            ctx.lineTo(position, u.bbox.top + u.bbox.height);
+            ctx.stroke();
+            ctx.restore();
+          },
+        },
+      };
+
+      const chart = new uPlot(
+        {
+          width,
+          height: PANEL_HEIGHT,
+          padding: [10, 10, 0, 0],
+          legend: { show: true, live: true },
+          cursor: {
+            // same key on every panel: the crosshair and the zoom follow each other
+            sync: { key: CURSOR_KEY, setSeries: false },
+            drag: { setScale: true, x: true, y: false, dist: 8 },
+            focus: { prox: 30 },
+          },
+          scales: {
+            x: { time: true },
+            y: { range: () => temperatureRange(panel.series, "y") },
+            out: { range: () => temperatureRange(panel.series, "out") },
+          },
+          axes: buildAxes(panel.series, panel.unit),
+          series: buildSeriesConfig(panel.series, { hoursToShow: PAST_HOURS + FUTURE_HOURS }),
+        },
+        columns,
+        target,
+        [nowMarker],
+      );
+
+      const observer =
+        typeof ResizeObserver === "function"
+          ? new ResizeObserver(() => {
+              const current = target.clientWidth;
+              if (current > 0 && Math.abs(chart.width - current) > 4) {
+                chart.setSize({ width: current, height: PANEL_HEIGHT });
+              }
+            })
+          : null;
+      if (observer) observer.observe(target);
+
+      target.addEventListener("dblclick", () => chart.setScale("x", { min: null, max: null }));
+
+      this._charts.set(panel.id, { chart, signature, target, observer });
     }
-
-    const columns = [data.x, ...data.series.map((entry) => entry.values)];
-    if (this._chart) {
-      this._chart.setData(columns);
-      return;
-    }
-
-    this._chartTarget.innerHTML = "";
-    const nowLine = {
-      hooks: {
-        draw: (u) => {
-          const { ctx } = u;
-          const position = u.valToPos(Date.now() / 1000, "x");
-          if (!Number.isFinite(position)) return;
-          ctx.save();
-          ctx.strokeStyle = "#e53935";
-          ctx.lineWidth = 1;
-          ctx.setLineDash([5, 4]);
-          ctx.beginPath();
-          ctx.moveTo(position, u.bbox.top);
-          ctx.lineTo(position, u.bbox.top + u.bbox.height);
-          ctx.stroke();
-          ctx.restore();
-        },
-      },
-    };
-
-    this._chart = new uPlot(
-      {
-        width,
-        height: CHART_HEIGHT,
-        padding: [10, 10, 0, 0],
-        legend: { show: true, live: true },
-        cursor: {
-          drag: { setScale: true, x: true, y: false, dist: 8 },
-          focus: { prox: 30 },
-        },
-        scales: {
-          x: { time: true },
-          y: { range: () => temperatureRange(data.series, "y") },
-          out: { range: () => temperatureRange(data.series, "out") },
-        },
-        axes: buildAxes(data.series),
-        series: buildSeriesConfig(data.series, { hoursToShow: PAST_HOURS + FUTURE_HOURS }),
-      },
-      columns,
-      this._chartTarget,
-      [nowLine],
-    );
-    this._signature = signature;
-
-    // double-click restores the full window after a drag-zoom
-    this._chartTarget.addEventListener("dblclick", () => {
-      this._chart.setScale("x", { min: null, max: null });
-    });
   }
 
   // -- shell ----------------------------------------------------------
@@ -315,14 +345,12 @@ class ThermalModelPanel extends HTMLElement {
           <div data-banners></div>
         </div>
 
-        <div class="card">
-          <div class="chart" data-chart></div>
-          <div class="foot" data-foot></div>
-        </div>
+        <div data-charts></div>
 
         <div class="card">
           <div class="sub" style="margin-bottom: 10px" data-params-info></div>
           <div class="params" data-params></div>
+          <div class="foot" data-foot></div>
         </div>
       </div>`;
 
@@ -341,7 +369,8 @@ class ThermalModelPanel extends HTMLElement {
       paramsInfo: find("[data-params-info]"),
       params: find("[data-params]"),
     };
-    this._chartTarget = find("[data-chart]");
+    this._chartHost = find("[data-charts]");
+    this._cards = new Map();
     this._shellBuilt = true;
   }
 
@@ -354,7 +383,7 @@ class ThermalModelPanel extends HTMLElement {
     const reference = Object.values(forecasts)[0] || {};
     const nowMs = Date.now();
 
-    const data = buildChartData({
+    const { x, panels, data } = buildPanels({
       history: this._history || { indoor: [], outdoor: [] },
       forecasts,
       nowMs,
@@ -382,9 +411,6 @@ class ThermalModelPanel extends HTMLElement {
     this._nodes.badge.className = `badge ${reference.stale ? "warn" : "ok"}`;
 
     const banners = [];
-    // What the panel expected and did not find. Without this the page shows an
-    // empty chart and nothing to act on; it is also the fastest way to diagnose a
-    // registry mismatch after a rename.
     const missing = [];
     if (!config.entry_id) missing.push("configuration du panneau absente");
     if (!config.indoor_entity) {
@@ -422,22 +448,17 @@ class ThermalModelPanel extends HTMLElement {
     const archived = data.series.filter((entry) => entry.id.includes(ARCHIVED_PREFIX));
     this._nodes.foot.textContent = [
       "Trait plein : mesuré et prévu. Pointillés : prévisions émises plus tôt, à comparer avec le mesuré.",
-      `${summary.seriesCount} trajectoire(s) intérieure(s)`,
       archived.length
         ? `prévisions passées : ${archived
             .map((entry) => entry.label.split("il y a ")[1])
             .join(", ")}`
         : "aucune prévision passée archivée pour l'instant",
-      "glisser pour zoomer, double-clic pour revenir",
-      `diagnostic : ${scenarioEntries.length ? Object.keys(forecasts).length : 0}/${
-        scenarioEntries.length
-      } scénario(s) · historique ${
+      "survol et zoom synchronisés entre les graphiques, double-clic pour revenir",
+      `diagnostic : ${Object.keys(forecasts).length}/${scenarioEntries.length} scénario(s) · historique ${
         (this._history && this._history.indoor && this._history.indoor.length) || 0
-      } point(s) · ${data.series.length} série(s) · ${
-        this._chart ? "graphique prêt" : "graphique en attente"
-      }${this._historyError ? " · historique en erreur" : ""} · largeur ${
-        this._chartTarget ? this._chartTarget.clientWidth : 0
-      }px${this._chart ? ` · toile ${this._chart.width}×${this._chart.height}` : ""}`,
+      } point(s) · ${panels.length} graphique(s) · ${data.series.length} série(s) · largeur ${
+        this._chartHost ? this._chartHost.clientWidth : 0
+      }px`,
     ].join(" · ");
 
     this._nodes.paramsInfo.innerHTML = `Paramètres du modèle — source : <strong>${escapeHtml(
@@ -462,9 +483,9 @@ class ThermalModelPanel extends HTMLElement {
       );
     }
 
-    this._updateChart(data).catch((err) => {
-      this._chartTarget.innerHTML = `<div class="empty">Graphique indisponible :
-        ${escapeHtml((err && err.message) || err)}</div>`;
+    this._renderPanels(x, panels).catch((err) => {
+      this._chartHost.innerHTML = `<div class="card"><div class="empty">Graphiques indisponibles :
+        ${escapeHtml((err && err.message) || err)}</div></div>`;
     });
   }
 

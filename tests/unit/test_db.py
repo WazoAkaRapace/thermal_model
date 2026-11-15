@@ -117,6 +117,38 @@ def test_schema_version_is_stamped(tmp_path: Path) -> None:
         store.recent_runs()
 
 
+def test_run_near_picks_the_requested_lead_time(tmp_path: Path) -> None:
+    """Comparison needs a run from 6 h ago, not the three newest ones."""
+    store = Database(tmp_path / "runs.db")
+    now = datetime.now(UTC)
+    for age_hours in (0.5, 1.0, 6.2, 12.4, 25.0):
+        store.record_run(_run(now - timedelta(hours=age_hours)))
+
+    six = store.run_near(age_hours=6.0, scenario=ModelScenario.FREE_FLOAT, now=now)
+    twelve = store.run_near(age_hours=12.0, scenario=ModelScenario.FREE_FLOAT, now=now)
+
+    assert six is not None and abs((now - six.issued_at).total_seconds() / 3600 - 6.2) < 0.01
+    assert twelve is not None and abs((now - twelve.issued_at).total_seconds() / 3600 - 12.4) < 0.01
+
+
+def test_run_near_returns_none_outside_the_tolerance(tmp_path: Path) -> None:
+    """A two-day-old run is not a 6 h comparison."""
+    store = Database(tmp_path / "runs.db")
+    now = datetime.now(UTC)
+    store.record_run(_run(now - timedelta(days=2)))
+
+    assert store.run_near(age_hours=6.0, scenario=ModelScenario.FREE_FLOAT, now=now) is None
+
+
+def test_run_near_stays_on_its_scenario(tmp_path: Path) -> None:
+    """Comparing a thermostat run against a free-float reality is meaningless."""
+    store = Database(tmp_path / "runs.db")
+    now = datetime.now(UTC)
+    store.record_run(_run(now - timedelta(hours=6), ModelScenario.THERMOSTAT))
+
+    assert store.run_near(age_hours=6.0, scenario=ModelScenario.FREE_FLOAT, now=now) is None
+
+
 def test_clear_empties_the_store(tmp_path: Path) -> None:
     """Changing the model or the sources invalidates the archived runs."""
     store = Database(tmp_path / "runs.db")

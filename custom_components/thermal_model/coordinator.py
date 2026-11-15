@@ -62,6 +62,12 @@ KEY_HORIZON = "horizon"
 # A cycle that produced nothing (sensor not ready yet) must not wait 30 minutes,
 # and a moving temperature must not leave a stale trajectory on screen.
 RETRY_INTERVAL = timedelta(minutes=2)
+
+# Lead times compared on the 'past forecast vs reality' chart. Runs are archived
+# every cycle (30 min), so picking the three most recent would show three
+# near-identical curves; these are the ages that actually test the model.
+ARCHIVE_AGES_HOURS = (6.0, 12.0, 24.0)
+ARCHIVE_TOLERANCE_HOURS = 2.5
 LIVE_REFRESH_COOLDOWN = timedelta(minutes=2)
 
 
@@ -265,13 +271,16 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         return bundle
 
     async def _history(self, runs: dict[str, ForecastRun]) -> dict[str, tuple[StoredRun, ...]]:
-        """Older runs for the 'forecast issued ago' comparison, per scenario."""
+        """Older runs for the 'forecast issued ago' comparison, per scenario.
+
+        One run per useful lead time (see ARCHIVE_AGES_HOURS): the point is to put
+        a trajectory announced hours ago next to what actually happened, not three
+        runs issued half an hour apart that look identical.
+        """
         history: dict[str, tuple[StoredRun, ...]] = {}
         for name in runs:
             scenario = next(s for s in self.runtime.scenarios if str(s) == name)
-            stored = await self.hass.async_add_executor_job(
-                _recent_runs_for, self.database, scenario
-            )
+            stored = await self.hass.async_add_executor_job(_archived_for, self.database, scenario)
             history[name] = stored
         return history
 
@@ -295,8 +304,22 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         )
 
 
-def _recent_runs_for(
-    database: Database, scenario: ModelScenario, limit: int = 4
-) -> tuple[StoredRun, ...]:
-    """Executor-side read (SQLite must stay out of the event loop)."""
-    return tuple(database.recent_runs(limit=limit, scenario=scenario))
+def _archived_for(database: Database, scenario: ModelScenario) -> tuple[StoredRun, ...]:
+    """Executor-side read: one stored run per comparison lead time.
+
+    Falls back to the most recent runs while the archive is still young, so a
+    fresh installation is not left with an empty comparison panel.
+    """
+    picked = [
+        run
+        for run in (
+            database.run_near(
+                age_hours=age, scenario=scenario, tolerance_hours=ARCHIVE_TOLERANCE_HOURS
+            )
+            for age in ARCHIVE_AGES_HOURS
+        )
+        if run is not None
+    ]
+    if picked:
+        return tuple(picked)
+    return tuple(database.recent_runs(limit=len(ARCHIVE_AGES_HOURS), scenario=scenario))

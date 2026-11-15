@@ -81,6 +81,13 @@ export function parseHistoryRows(rows) {
   return points;
 }
 
+/** "il y a 25 min" / "il y a 6 h": an archived run of 20 minutes is not "0 h". */
+function formatAge(ageHours) {
+  const hours = Number.isFinite(ageHours) ? ageHours : 0;
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} min`;
+  return `${Math.round(hours)} h`;
+}
+
 /** Sampling interval of a series, robust to a few long holes. */
 function medianInterval(points) {
   if (!points || points.length < 3) return 0;
@@ -221,7 +228,7 @@ export function buildChartData({ history, forecasts, nowMs }) {
       if (!archivedValues) continue;
       series.push({
         id: `${scenario}:archived:${position}`,
-        label: `${label} — prévu il y a ${Math.round(run.age_hours || 0)} h`,
+        label: `${label} — prévu il y a ${formatAge(run.age_hours)}`,
         color,
         scale: "y",
         width: 1.1,
@@ -325,38 +332,102 @@ export function buildSeriesConfig(series, { hoursToShow }) {
 }
 
 /** Axis configuration: time on the left, temperature on both sides. */
-export function buildAxes(series) {
+export function buildAxes(series, unit = "") {
   const hasOutdoor = series.some((entry) => entry.scale === "out");
+  const grid = { stroke: "var(--divider-color, #e0e0e0)", width: 1 };
+  const common = {
+    stroke: "var(--secondary-text-color, #888)",
+    font: "11px system-ui, sans-serif",
+    ticks: { stroke: "var(--divider-color, #e0e0e0)" },
+    grid,
+  };
+
   const axes = [
     {
-      stroke: "var(--secondary-text-color, #888)",
-      grid: { stroke: "var(--divider-color, #e0e0e0)", width: 1 },
-      ticks: { stroke: "var(--divider-color, #e0e0e0)" },
-      font: "11px system-ui, sans-serif",
+      ...common,
+      // time is read from the tick labels themselves (14:00, lun. 16)
+      label: "",
     },
     {
+      ...common,
       scale: "y",
-      stroke: "var(--secondary-text-color, #888)",
-      grid: { stroke: "var(--divider-color, #e0e0e0)", width: 1 },
-      ticks: { stroke: "var(--divider-color, #e0e0e0)" },
-      font: "11px system-ui, sans-serif",
-      size: 44,
-      values: (self, splits) => splits.map((value) => `${value.toFixed(0)}°`),
+      size: 46,
+      label: unit,
+      labelSize: 16,
+      labelGap: 2,
+      labelFont: "11px system-ui, sans-serif",
+      values: (self, splits) => splits.map((value) => value.toFixed(0)),
     },
   ];
   if (hasOutdoor) {
     axes.push({
+      ...common,
       scale: "out",
       side: 1,
-      stroke: "var(--secondary-text-color, #888)",
+      size: 46,
+      label: unit,
+      labelSize: 16,
+      labelGap: 2,
+      labelFont: "11px system-ui, sans-serif",
       grid: { show: false },
       ticks: { show: false },
-      font: "11px system-ui, sans-serif",
-      size: 44,
-      values: (self, splits) => splits.map((value) => `${value.toFixed(0)}°`),
+      values: (self, splits) => splits.map((value) => value.toFixed(0)),
     });
   }
   return axes;
+}
+
+/**
+ * Split the chart into several small, coherent panels instead of one giant plot.
+ *
+ * A single figure with eleven series and two y scales is unreadable: the eye
+ * cannot match a dashed line to its scenario, and the outdoor scale drags the
+ * indoor range. Each panel below answers one question, shares the same time axis
+ * (so they line up) and the same colours (so a series is recognisable across
+ * panels).
+ */
+export function buildPanels({ history, forecasts, nowMs, primaryScenario, maxArchived = 3 }) {
+  const data = buildChartData({ history, forecasts, nowMs });
+  const indoor = data.series.filter((entry) => entry.scale === "y");
+  const outdoor = data.series.filter((entry) => entry.scale === "out");
+  const measured = indoor.filter((entry) => entry.id === "measured");
+  const current = indoor.filter((entry) => !entry.id.includes(ARCHIVED_PREFIX));
+  // One scenario only: comparing three runs of one model is a reading;
+  // comparing six runs of two models in one plot is a tangle.
+  const primary = primaryScenario || Object.keys(forecasts)[0];
+  const archived = indoor
+    .filter((entry) => entry.id.includes(ARCHIVED_PREFIX) && entry.id.startsWith(`${primary}:`))
+    .slice(0, maxArchived);
+
+  const panels = [];
+  if (current.length) {
+    panels.push({
+      id: "indoor",
+      title: "Température intérieure",
+      subtitle: "mesuré et trajectoires prévues",
+      unit: "°C",
+      series: current,
+    });
+  }
+  if (archived.length && measured.length) {
+    panels.push({
+      id: "past",
+      title: "Prévision d'hier contre réalité",
+      subtitle: "pointillés : ce que le modèle annonçait quelques heures plus tôt",
+      unit: "°C",
+      series: [...measured, ...archived],
+    });
+  }
+  if (outdoor.length) {
+    panels.push({
+      id: "outdoor",
+      title: "Extérieur",
+      subtitle: "mesuré et prévision météo utilisée",
+      unit: "°C",
+      series: outdoor,
+    });
+  }
+  return { x: data.x, panels, data, primaryScenario };
 }
 
 /** Headline numbers shown above the chart. */

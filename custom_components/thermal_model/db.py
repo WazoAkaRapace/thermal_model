@@ -192,6 +192,30 @@ class Database:
             )
         return stored
 
+    def run_near(
+        self,
+        *,
+        age_hours: float,
+        scenario: ModelScenario,
+        tolerance_hours: float = 3.0,
+        now: datetime | None = None,
+    ) -> StoredRun | None:
+        """The run issued closest to ``age_hours`` ago, if one is close enough.
+
+        The dashboard compares the trajectory of *that* moment with what happened
+        since. Taking the three most recent runs instead would compare three
+        curves issued minutes apart — visually identical, and useless as a check.
+        """
+        target = (now or datetime.now(UTC)) - timedelta(hours=age_hours)
+        best: tuple[float, StoredRun] | None = None
+        for run in self.recent_runs(limit=500, scenario=scenario):
+            delta = abs((run.issued_at - target).total_seconds()) / 3600.0
+            if delta > tolerance_hours:
+                continue
+            if best is None or delta < best[0]:
+                best = (delta, run)
+        return best[1] if best else None
+
     def count(self) -> int:
         """Number of stored runs."""
         with self._connect() as connection:
