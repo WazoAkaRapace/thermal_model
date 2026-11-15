@@ -39,6 +39,24 @@ class ModelDivergedError(RuntimeError):
     """Raised when a simulation leaves the physically plausible domain."""
 
 
+def effective_heating_k(
+    k: float,
+    alpha: float | None,
+    reference: float | None,
+    text: float,
+) -> float:
+    """The heating gain at this outdoor temperature.
+
+    k is identified at the mean outdoor temperature of the window; when it is colder
+    the measured energy delivers less heat (a heat pump's COP drops), so the gain is
+    scaled up by alpha per degree below the reference — and down when milder. With no
+    alpha the gain is constant, which is correct for resistive heating.
+    """
+    if not alpha or reference is None:
+        return k
+    return max(0.0, k * (1.0 + alpha * (reference - text)))
+
+
 @dataclass(frozen=True, kw_only=True)
 class ThermalParams:
     """Identified parameters of the 1R1C model."""
@@ -47,6 +65,12 @@ class ThermalParams:
     c_s: float  # K/(W/m²)/h, solar gain
     d: float  # K/h, net internal gains
     k: float | None = None  # K/(h·kW), heating gain; None when not identified
+    # Heating systems convert their measured energy less efficiently when it is cold
+    # (a heat pump's COP, mostly). k is then k0 at ``k_reference_temperature`` and
+    # grows by k0*alpha for every degree below it. alpha = 0 means a constant k, which
+    # is what resistive heating and a narrow identification window give.
+    alpha: float | None = None  # 1/K
+    k_reference_temperature: float | None = None  # °C, mean outdoor of the window
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.a) or not 0.0 < self.a < 1.0:
@@ -57,6 +81,12 @@ class ThermalParams:
             raise ValueError(f"d must be in ]-1, 1[ K/h, got {self.d!r}")
         if self.k is not None and (not math.isfinite(self.k) or not 0.0 < self.k < 10.0):
             raise ValueError(f"k must be in ]0, 10[ K/(h·kW) or None, got {self.k!r}")
+        if self.alpha is not None and self.k is None:
+            raise ValueError("alpha needs k")
+        if self.alpha is not None and (
+            not math.isfinite(self.alpha) or not -0.05 < self.alpha < 0.30
+        ):
+            raise ValueError(f"alpha must be in ]-0.05, 0.30[ 1/K or None, got {self.alpha!r}")
 
     @property
     def time_constant_hours(self) -> float:
@@ -88,7 +118,8 @@ def step(
         -params.a * (tin - inputs.text)
         + params.c_s * inputs.solar
         + params.d
-        + heating_k * inputs.heating_kw
+        + effective_heating_k(heating_k, params.alpha, params.k_reference_temperature, inputs.text)
+        * inputs.heating_kw
     )
     return tin + dt_hours * rate
 
@@ -111,6 +142,7 @@ def simulate(
     if dt_hours <= 0:
         raise ValueError("dt_hours must be positive")
     heating_k = params.k or 0.0
+    reference = params.k_reference_temperature
 
     trajectory: list[float] = [tin]
     current = tin
@@ -119,7 +151,8 @@ def simulate(
             -params.a * (current - inputs.text)
             + params.c_s * inputs.solar
             + params.d
-            + heating_k * inputs.heating_kw
+            + effective_heating_k(heating_k, params.alpha, reference, inputs.text)
+            * inputs.heating_kw
         )
         if abs(rate) > max_rate_k_per_hour:
             raise ModelDivergedError(

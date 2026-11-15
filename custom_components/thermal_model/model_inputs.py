@@ -506,7 +506,12 @@ async def _finish_k_with_daily_energy(
     daily = identify_k_from_daily_energy(hours, tin, tout, solar, energy, params)
     if not daily.ok or daily.k is None:
         return None, energy_sensor, daily
-    finished = replace(params, k=daily.k)
+    finished = replace(
+        params,
+        k=daily.k,
+        alpha=daily.alpha,
+        k_reference_temperature=daily.reference_temperature,
+    )
     _LOGGER.info(
         "Thermal Model: k = %.4f ± %.4f K/kWh from %s days of %s",
         daily.k,

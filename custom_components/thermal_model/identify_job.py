@@ -59,6 +59,9 @@ class IdentificationOutcome:
     k_stderr: float | None = None
     k_days: int = 0
     k_energy_kwh: float = 0.0
+    k_alpha: float | None = None
+    k_alpha_stderr: float | None = None
+    k_reference_temperature: float | None = None
     solar_source: str = "open_meteo_past"
     notes: tuple[str, ...] = ()
 
@@ -89,6 +92,11 @@ class IdentificationOutcome:
             "k_standard_error": (None if self.k_stderr is None else round(self.k_stderr, 4)),
             "k_days": self.k_days,
             "k_energy_kwh": round(self.k_energy_kwh, 2),
+            "k_alpha": (None if self.k_alpha is None else round(self.k_alpha, 4)),
+            "k_alpha_stderr": (
+                None if self.k_alpha_stderr is None else round(self.k_alpha_stderr, 4)
+            ),
+            "k_reference_temperature": self.k_reference_temperature,
             "solar_source": self.solar_source,
             "notes": list(self.notes),
             "identification_error": self.message,
@@ -142,6 +150,12 @@ async def async_identify_model(
     )
 
     notes = tuple(inputs.reasons)
+    if result is not None and getattr(result, "params", None) is not None:
+        pass  # alpha note handled below via inputs.daily_k
+    _daily = inputs.daily_k
+    if _daily is not None and _daily.alpha_note and result is not None:
+        notes = (*notes, _daily.alpha_note)
+
     daily_model = inputs.daily_model
     if daily_model is not None and daily_model.ok and daily_model.params is not None:
         # No power meter at all: the four coefficients come from the daily balance.
@@ -223,6 +237,9 @@ async def async_identify_model(
         k_stderr=daily.stderr if daily is not None else None,
         k_days=daily.days if daily is not None else 0,
         k_energy_kwh=daily.total_kwh if daily is not None else 0.0,
+        k_alpha=daily.alpha if daily is not None else None,
+        k_alpha_stderr=daily.alpha_stderr if daily is not None else None,
+        k_reference_temperature=(daily.reference_temperature if daily is not None else None),
         identified_at=datetime.now(UTC),
         indoor_sources=tuple(inputs.indoor_sources),
         heating_power_sensor=inputs.heating_power_sensor,
