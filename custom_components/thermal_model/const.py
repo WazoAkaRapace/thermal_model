@@ -9,7 +9,7 @@ DOMAIN: Final = "Thermal Model"
 DOMAIN_KEY: Final = "thermal_model"
 
 # Platforms forwarded once runtime data exists (grows with the milestones).
-PLATFORMS: Final[list[str]] = []
+PLATFORMS: Final[list[str]] = ["sensor", "number"]
 
 # --------------------------------------------------------------------------
 # Configuration keys
@@ -45,6 +45,12 @@ CONF_WEATHER_MODELS: Final = "weather_models"
 CONF_WEATHER_ENTITY: Final = "weather_entity"
 CONF_SCENARIOS: Final = "scenarios"
 
+# Forecast tuning (runtime, exposed as numbers)
+CONF_HORIZON_HOURS: Final = "horizon_hours"
+CONF_SCENARIO_SETPOINT: Final = "scenario_setpoint"
+CONF_HYSTERESIS: Final = "hysteresis"
+CONF_CAPACITY: Final = "capacity"
+
 # --------------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------------
@@ -61,7 +67,46 @@ DEFAULT_MIN_PASSIVE_COVERAGE: Final = 0.25
 DEFAULT_OUTLIER_THRESHOLD: Final = 3.0  # K/h
 DEFAULT_AUTO_IDENTIFY_WEEKLY: Final = False
 DEFAULT_WEATHER_MODELS: Final[list[str]] = ["best_match", "arome_france"]
-DEFAULT_SCENARIOS: Final[list[str]] = ["free_float"]
+DEFAULT_SCENARIOS: Final[list[str]] = ["free_float", "thermostat"]
+
+# Weather provider (Open-Meteo: no key, several comparable models)
+WEATHER_API_URL: Final = "https://api.open-meteo.com/v1/forecast"
+WEATHER_TIMEOUT: Final = 20
+DEFAULT_WEATHER_MODEL: Final = "best_match"
+
+# Where the archived forecast runs live, relative to the configuration directory
+STORAGE_SUBDIR: Final = "thermal_model"
+RUNS_RETENTION_DAYS: Final = 14
+RUNS_KEPT_PER_DAY: Final = 4
+
+# Forecast defaults
+DEFAULT_PARAM_A: Final = 0.016  # /h, calibrated on the reference house
+DEFAULT_PARAM_C_S: Final = 0.0023  # kWh/(m²·K)-free internal gain weight
+DEFAULT_PARAM_D: Final = 0.04  # K/h, internal + solar gains
+DEFAULT_PARAM_K: Final = 0.49  # °C per kWh of heating
+MIN_PARAM_A: Final = 0.001
+MAX_PARAM_A: Final = 0.200
+MIN_PARAM_C_S: Final = 0.0005
+MAX_PARAM_C_S: Final = 0.0500
+MIN_PARAM_D: Final = -0.50
+MAX_PARAM_D: Final = 0.50
+MIN_PARAM_K: Final = 0.0
+MAX_PARAM_K: Final = 5.0
+DEFAULT_HORIZON_HOURS: Final = 48
+MIN_HORIZON_HOURS: Final = 6
+MAX_HORIZON_HOURS: Final = 120
+DEFAULT_SCENARIO_SETPOINT: Final = 20.5
+MIN_SETPOINT: Final = 10.0
+MAX_SETPOINT: Final = 30.0
+DEFAULT_HYSTERESIS: Final = 0.4
+MIN_HYSTERESIS: Final = 0.1
+MAX_HYSTERESIS: Final = 3.0
+DEFAULT_CAPACITY: Final = 2.0  # kW
+MIN_CAPACITY: Final = 0.1
+MAX_CAPACITY: Final = 30.0
+# Commandable heating entities only have an on/off state: the capacity is how
+# much heat they deliver while on.
+FORECAST_REFRESH_MINUTES: Final = 30
 
 # Bounds
 MIN_HISTORY_DAYS: Final = 5
@@ -104,6 +149,14 @@ class Identifiability(StrEnum):
     K_NOT_IDENTIFIED = "k_not_identified"  # heating gain could not be identified
     K_ESTIMATED_FROM_ONOFF = "k_estimated_from_onoff"  # modulating heater, on/off power proxy
     INSUFFICIENT_DATA = "insufficient_data"
+
+
+class ModelScenario(StrEnum):
+    """How the heating is assumed to behave in a forecast."""
+
+    FREE_FLOAT = "free_float"  # heating never runs
+    THERMOSTAT = "thermostat"  # hysteresis emulation, bounded by capacity
+    OBSERVED_DUTY = "observed_duty"  # replay of the observed duty cycle
 
 
 class ReasonCode(StrEnum):

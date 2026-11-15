@@ -36,8 +36,13 @@ def test_no_forbidden_native_dependencies() -> None:
 
 
 def test_package_imports_are_stdlib_or_homeassistant() -> None:
-    """Keep the dependency surface explicit: stdlib, voluptuous or HA only."""
-    allowed_prefixes = ("homeassistant", "voluptuous")
+    """Keep the dependency surface explicit: stdlib, voluptuous or HA only.
+
+    ``aiohttp`` is allowed because it ships with Home Assistant itself: the
+    weather client needs the response type, and Home Assistant's own integrations
+    import it directly.
+    """
+    allowed_prefixes = ("homeassistant", "voluptuous", "aiohttp")
     stdlib_or_allowed = {
         "__future__",
         "abc",
@@ -46,9 +51,11 @@ def test_package_imports_are_stdlib_or_homeassistant() -> None:
         "dataclasses",
         "datetime",
         "enum",
+        "functools",
         "json",
         "logging",
         "math",
+        "pathlib",
         "sqlite3",
         "statistics",
         "typing",

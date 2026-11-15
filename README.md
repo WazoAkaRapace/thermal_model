@@ -54,15 +54,28 @@ Identification details, the estimator that avoids measurement-noise bias, the id
 diagnostics and the reasons a parameter can honestly come back as `unknown` are documented in
 [`docs/`](docs/).
 
+## Dashboard
+
+A ready-to-import Lovelace dashboard ships in
+[`dashboards/thermal_model.yaml`](dashboards/thermal_model.yaml). It plots 48 h of
+**measured** indoor temperature, the 48 h **forecasts** of each scenario, and the
+forecasts **issued 6 h / 12 h / 24 h ago** on the same axis — the only way to see
+whether the model anticipates the house or merely agrees with itself. A second view
+uses built-in cards only, so the dashboard is usable without any custom card.
+
+See [`docs/dashboard.md`](docs/dashboard.md) for the import steps and the attributes
+the cards read. `tests/test_dashboard.py` parses the YAML and fails if it references
+an entity or attribute that does not exist.
+
 ## Status
 
 | Milestone | Content | State |
 |---|---|---|
 | M1 | Integration skeleton, config flow, CI | ✅ |
-| M2 | Local SQLite store, 1R1C identification | 🚧 |
-| M3 | Forecast engine, multi-model weather | planned |
+| M2 | Local SQLite store, 1R1C identification | 🚧 core done, recorder reader pending |
+| M3 | Forecast engine, multi-model weather | 🚧 Open-Meteo + 3 scenarios, one model at a time |
 | M4 | `weather.*` entities, validation scoreboard, repairs | planned |
-| M5 | Dashboards, HACS release | planned |
+| M5 | Dashboards, HACS release | 🚧 bundled dashboard + entities, release pending |
 
 ## Development
 
