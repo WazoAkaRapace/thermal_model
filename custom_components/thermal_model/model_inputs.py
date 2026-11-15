@@ -139,12 +139,34 @@ def _correlation(left: list[float], right: list[float]) -> float:
     return covariance / (spread_left * spread_right)
 
 
+def looks_like_a_sun_meter(values: dict[datetime, float], solar: dict[datetime, float]) -> bool:
+    """Whether a power series is production, not heating.
+
+    A heating meter never follows the sun: when irradiance is high the house needs
+    less heat, not more. Measured on a real installation, the meter the fit preferred
+    was an inverter's PV string — the solar regressor was already in the model, so the
+    fit found the same signal twice and looked excellent.
+    """
+    both = [(moment, value) for moment, value in sorted(values.items()) if moment in solar]
+    if len(both) < 24 * 2:
+        return False
+    daytime = [value for moment, value in both if solar[moment] > 50.0]
+    night = [value for moment, value in both if solar[moment] <= 50.0]
+    if not daytime or not night:
+        return False
+    day_mean = statistics.fmean(daytime)
+    night_mean = statistics.fmean(night)
+    # produces when the sun is up and stops at night: that is a solar meter
+    return day_mean > 0.2 and day_mean > 2.5 * max(night_mean, 0.05)
+
+
 def power_candidates(
     values: dict[str, dict[datetime, float]],
     exclude: set[str],
     unit_of: dict[str, str | None] | None = None,
     indoor: dict[datetime, float] | None = None,
     outdoor: dict[datetime, float] | None = None,
+    solar: dict[datetime, float] | None = None,
 ) -> list[str]:
     """Power meters worth trying as the heating input, most variable first.
 
@@ -161,7 +183,12 @@ def power_candidates(
         if len(readings) < 24 * 3:
             continue
         peak = max(readings)
-        if peak <= 0.2 or peak > 20.0:  # kW: below is noise, above is not a house load
+        # kW: a house heating draws at least a few hundred watts when it runs, and
+        # nothing above 20 kW. Without this floor the fit picked a 50 W ventilation
+        # meter, which cannot heat anything but happened to track the weather.
+        if peak < 0.8 or peak > 20.0:
+            continue
+        if solar and looks_like_a_sun_meter(dict(points), solar):
             continue
         scored.append((statistics.pvariance(readings), statistic_id))
     scored.sort(reverse=True)
