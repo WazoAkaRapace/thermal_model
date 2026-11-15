@@ -111,19 +111,34 @@ class ThermalModelPanel extends HTMLElement {
   connectedCallback() {
     this._onResize = () => {
       const width = this._chartTarget ? this._chartTarget.clientWidth : 0;
-      if (this._chart && width > 0 && Math.abs(width - this._width) > 4) {
+      if (width <= 0) return;
+      if (this._chart && Math.abs(width - this._width) > 4) {
         this._width = width;
         this._chart.setSize({ width, height: CHART_HEIGHT });
+      } else if (!this._chart) {
+        // The first render happened while the element had no layout yet (Home
+        // Assistant creates the element, sets its properties, then appends it).
+        this._update();
       }
     };
     window.addEventListener("resize", this._onResize);
+    // A window resize event is not enough: the panel is attached and laid out
+    // after its properties are set, so the first chart can be built at width 0.
+    if (typeof ResizeObserver === "function") {
+      this._observer = new ResizeObserver(() => this._onResize());
+    }
     this._historyTimer = window.setInterval(() => this._loadHistory(), HISTORY_REFRESH_MS);
     this._loadHistory();
     this._update();
+    if (this._observer && this._chartTarget) this._observer.observe(this._chartTarget);
   }
 
   disconnectedCallback() {
     window.removeEventListener("resize", this._onResize);
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
     if (this._historyTimer) window.clearInterval(this._historyTimer);
     if (this._chart) {
       this._chart.destroy();
@@ -202,8 +217,13 @@ class ThermalModelPanel extends HTMLElement {
       return;
     }
 
+    // Building a chart at width 0 draws nothing and leaves nothing to look at:
+    // wait for the ResizeObserver to report a real size.
+    const measured = (this._chartTarget && this._chartTarget.clientWidth) || 0;
+    if (measured <= 0 && !this._chart) return;
+
     const uPlot = await this._ensureUplot();
-    const width = Math.max(320, (this._chartTarget && this._chartTarget.clientWidth) || 900);
+    const width = Math.max(320, measured || this._width || 900);
     this._width = width;
 
     const signature = data.series.map((entry) => entry.id).join("|");
@@ -360,6 +380,28 @@ class ThermalModelPanel extends HTMLElement {
     this._nodes.badge.className = `badge ${reference.stale ? "warn" : "ok"}`;
 
     const banners = [];
+    // What the panel expected and did not find. Without this the page shows an
+    // empty chart and nothing to act on; it is also the fastest way to diagnose a
+    // registry mismatch after a rename.
+    const missing = [];
+    if (!config.entry_id) missing.push("configuration du panneau absente");
+    if (!config.indoor_entity) {
+      missing.push("capteur intérieur non fourni");
+    } else if (!this._hass.states[config.indoor_entity]) {
+      missing.push(`capteur introuvable : ${config.indoor_entity}`);
+    }
+    const scenarioEntries = Object.entries(config.scenarios || {});
+    if (!scenarioEntries.length) missing.push("aucun scénario de prévision configuré");
+    for (const [, entityId] of scenarioEntries) {
+      if (!this._hass.states[entityId]) missing.push(`prévision introuvable : ${entityId}`);
+    }
+    if (missing.length) {
+      banners.push(
+        `<div class="banner err">Le panneau ne trouve pas tout ce qu'il attend : ${missing
+          .map(escapeHtml)
+          .join(" · ")}</div>`,
+      );
+    }
     if (reference.stale) {
       banners.push(
         `<div class="banner">⚠️ Météo indisponible : les dernières trajectoires connues sont affichées${
@@ -385,6 +427,15 @@ class ThermalModelPanel extends HTMLElement {
             .join(", ")}`
         : "aucune prévision passée archivée pour l'instant",
       "glisser pour zoomer, double-clic pour revenir",
+      `diagnostic : ${scenarioEntries.length ? Object.keys(forecasts).length : 0}/${
+        scenarioEntries.length
+      } scénario(s) · historique ${
+        (this._history && this._history.indoor && this._history.indoor.length) || 0
+      } point(s) · ${data.series.length} série(s) · ${
+        this._chart ? "graphique prêt" : "graphique en attente"
+      }${this._historyError ? " · historique en erreur" : ""} · largeur ${
+        this._chartTarget ? this._chartTarget.clientWidth : 0
+      }px${this._chart ? ` · toile ${this._chart.width}×${this._chart.height}` : ""}`,
     ].join(" · ");
 
     this._nodes.paramsInfo.innerHTML = `Paramètres du modèle — source : <strong>${escapeHtml(
