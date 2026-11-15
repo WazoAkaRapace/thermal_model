@@ -107,6 +107,9 @@ MAX_CAPACITY: Final = 30.0
 # Commandable heating entities only have an on/off state: the capacity is how
 # much heat they deliver while on.
 FORECAST_REFRESH_MINUTES: Final = 30
+# The weather is downloaded at most this often, whatever refreshes the
+# sensors trigger: the provider publishes hourly and rate-limits bursts.
+WEATHER_CACHE_MINUTES: Final = 25
 
 # Bounds
 MIN_HISTORY_DAYS: Final = 5

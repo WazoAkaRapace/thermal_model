@@ -38,6 +38,7 @@ from .const import (
     FORECAST_REFRESH_MINUTES,
     RUNS_KEPT_PER_DAY,
     RUNS_RETENTION_DAYS,
+    WEATHER_CACHE_MINUTES,
     ModelScenario,
 )
 from .core.forecast import ForecastRun, WeatherStep, build_run
@@ -122,6 +123,13 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         self._last_bundle: ForecastBundle | None = None
         self._unsub_state: Callable[[], None] | None = None
         self._unsub_identify: Callable[[], None] | None = None
+        # The weather is downloaded at most every WEATHER_CACHE_MINUTES: the API
+        # publishes hourly, but the indoor sensor changes every few minutes and each
+        # change triggers a refresh. Without this cache that meant one HTTP call every
+        # two minutes, around the clock — enough for the provider to start answering
+        # 503 (measured on the real installation).
+        self._weather_cache: tuple[datetime, list[WeatherStep], str] | None = None
+        self._unsub_identify_retry: Callable[[], None] | None = None
         self._debouncer = Debouncer(
             self.hass,
             _LOGGER,
@@ -159,6 +167,9 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         if self._unsub_identify is not None:
             self._unsub_identify()
             self._unsub_identify = None
+        if self._unsub_identify_retry is not None:
+            self._unsub_identify_retry()
+            self._unsub_identify_retry = None
         self._debouncer.async_cancel()
         await super().async_shutdown()
 
@@ -180,9 +191,10 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
             return
 
         async def _retry(_now: Any) -> None:
+            self._unsub_identify_retry = None
             await self.async_identify()
 
-        async_call_later(self.hass, IDENTIFY_RETRY_DELAY, _retry)
+        self._unsub_identify_retry = async_call_later(self.hass, IDENTIFY_RETRY_DELAY, _retry)
 
     async def async_identify(self) -> None:
         """Fit the model on the recorded history and publish the parameters.
@@ -268,6 +280,21 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         except (TypeError, ValueError):
             return None
 
+    def _fresh_weather(self, now: datetime) -> list[WeatherStep] | None:
+        """The last successful weather, only if it is fresh enough to reuse.
+
+        The provider publishes hourly; a cache hit means the sensor-triggered
+        refreshes cost no HTTP call at all. An aged cache is NOT served from here —
+        the caller must attempt the download, and only fall back to the cache if the
+        download fails.
+        """
+        if self._weather_cache is None:
+            return None
+        fetched_at, steps, _model = self._weather_cache
+        if (now - fetched_at).total_seconds() / 60 < WEATHER_CACHE_MINUTES:
+            return steps
+        return None
+
     def _weather_model(self) -> str:
         models = self.entry.options.get(
             CONF_WEATHER_MODELS, self.entry.data.get(CONF_WEATHER_MODELS) or []
@@ -298,17 +325,29 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         horizon = int(self._tunable(KEY_HORIZON))
         now = datetime.now(UTC)
 
-        try:
-            weather = await fetch_weather(
-                async_get_clientsession(self.hass),
-                latitude=latitude,
-                longitude=longitude,
-                hours=horizon,
-                model=self._weather_model(),
-                now=now,
-            )
-        except WeatherError as err:
-            return self._stale_bundle(indoor, outdoor, str(err))
+        weather = self._fresh_weather(now)
+        weather_note = None
+        if weather is None:
+            try:
+                weather = await fetch_weather(
+                    async_get_clientsession(self.hass),
+                    latitude=latitude,
+                    longitude=longitude,
+                    hours=horizon,
+                    model=self._weather_model(),
+                    now=now,
+                )
+                self._weather_cache = (now, list(weather), self._weather_model())
+            except WeatherError as err:
+                if self._weather_cache is not None:
+                    # an aging forecast beats no forecast, and hammering a throttled
+                    # provider is what got us 503s in the first place
+                    fetched_at, steps, _model = self._weather_cache
+                    age = (now - fetched_at).total_seconds() / 60
+                    weather = steps
+                    weather_note = f"{err} — météo de il y a {age:.0f} min réutilisée"
+                else:
+                    return self._stale_bundle(indoor, outdoor, str(err))
 
         params = self._params()
         runs: dict[str, ForecastRun] = {}
@@ -353,6 +392,8 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
             params_source=self.runtime.params_source,
             indoor_temperature=indoor,
             outdoor_temperature=outdoor,
+            stale=weather_note is not None,
+            error=weather_note,
             history=await self._history(runs),
         )
         self._last_bundle = bundle

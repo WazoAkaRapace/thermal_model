@@ -159,13 +159,20 @@ async def test_the_forecast_follows_the_indoor_sensor(
 
 
 async def test_a_weather_outage_keeps_the_previous_runs(
-    hass: HomeAssistant, setup_entry: MockConfigEntry, aioclient_mock: Any
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    aioclient_mock: Any,
+    freezer: Any,
 ) -> None:
     """The chart must not blink to empty when the API is down."""
+    from datetime import timedelta
+
     from custom_components.thermal_model.coordinator import ThermalModelCoordinator
 
     coordinator: ThermalModelCoordinator = setup_entry.runtime_data.coordinator  # type: ignore[assignment]
 
+    # a first failing refresh minutes later: the cache is still fresh, no HTTP at all
+    freezer.tick(timedelta(minutes=5))
     aioclient_mock.clear_requests()
     aioclient_mock.get("https://api.open-meteo.com/v1/forecast", status=503)
     await coordinator.async_refresh()
@@ -173,9 +180,54 @@ async def test_a_weather_outage_keeps_the_previous_runs(
 
     state = hass.states.get("sensor.home_forecast_free_float")
     assert state is not None
+    assert state.attributes["stale"] is False, "fresh cached weather is not stale"
+    assert aioclient_mock.call_count == 0, (
+        "a refresh 5 minutes after the last download must not call the provider"
+    )
+
+    # after the cache window, the download is attempted, fails, and the cache is
+    # reused with its age in the error
+    freezer.tick(timedelta(minutes=30))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.home_forecast_free_float")
     assert state.attributes["stale"] is True
     assert state.attributes["error"] is not None
     assert len(state.attributes["values"]) == 49  # previous run still there
+
+
+async def test_the_weather_is_downloaded_at_most_every_cache_window(
+    hass: HomeAssistant,
+    setup_entry: MockConfigEntry,
+    aioclient_mock: Any,
+    freezer: Any,
+) -> None:
+    """The indoor sensor changes every few minutes; the provider must not see it.
+
+    Each sensor change triggers a refresh, and a refresh used to mean one HTTP call:
+    one every ~2 minutes around the clock, which is what got us rate-limited.
+    """
+    from datetime import timedelta
+
+    from tests.conftest import open_meteo_payload
+
+    from custom_components.thermal_model.coordinator import ThermalModelCoordinator
+
+    coordinator: ThermalModelCoordinator = setup_entry.runtime_data.coordinator  # type: ignore[assignment]
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get("https://api.open-meteo.com/v1/forecast", json=open_meteo_payload())
+    freezer.tick(timedelta(minutes=30))  # the setup download has aged out
+    for _ in range(5):
+        freezer.tick(timedelta(minutes=4))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert aioclient_mock.call_count == 1, (
+        f"5 refreshes in 20 minutes made {aioclient_mock.call_count} HTTP calls, "
+        "the first download then four served from cache"
+    )
 
 
 async def test_storage_file_is_created_under_the_config_directory(
