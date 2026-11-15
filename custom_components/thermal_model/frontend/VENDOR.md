@@ -1,40 +1,38 @@
 # Vendored frontend dependency
 
-**uPlot 1.6.32** — MIT, © 2022 Leon Sorokin.
-Upstream: https://github.com/leeoniya/uPlot (npm package `uplot@1.6.32`).
+**ApexCharts 4.7.0** — MIT, © 2018 ApexCharts.
+Upstream: https://github.com/apexcharts/apexcharts.js (npm package `apexcharts@4.7.0`).
 
 | File | Upstream name | SHA-256 |
 |---|---|---|
-| `uplot.min.js` | `dist/uPlot.iife.min.js` | `19c8d4c6ad88929a79f4ae49d6f7161566dfd0ba3d15cc495e974f787eb78f1f` |
-| `uplot.min.css` | `dist/uPlot.min.css` | `df630c6a8d6f8eeaff264b50f73ce5b114f646ffd9a0bb74f049b0a00135fa04` |
+| `apexcharts.min.js` | `dist/apexcharts.min.js` | `c46de876c375aab3fbc23d82418f7d77251403335808983d2b832d4a38481948` |
 
 ## Why this library, and why vendored
 
-A time-series chart needs axes with time ticks, a shared cursor, a legend, zoom,
-high-DPI handling and gap handling. Hand-rolling them is how a panel quietly
-becomes worse than the thing it replaced.
+The panel needs what every chart needs and what a hand-written SVG renderer gets
+wrong: axis tick values that stay put while the cursor moves, a shared tooltip
+listing the series at the hovered instant, axis titles with units, annotations (the
+"now" marker), a clickable legend, synchronised cursors and zoom across panels, and
+gap handling. Each of those was a bug in the previous hand-rolled and minimal-library
+attempts.
 
-uPlot is chosen because it is **51 KB raw / 22 KB gzipped** (ApexCharts is ~570 KB,
-ECharts ~1 MB), it is purpose-built for time series, it has no dependency of its
-own, and its API works without a build step — relevant because this integration
-ships `requirements: []` and serves its own frontend.
+ApexCharts is the library Home Assistant users already have through
+`apexcharts-card`, so the rendering and the interactions are the ones they expect.
+It costs 576 KB raw / 153 KB gzipped — accepted deliberately over uPlot's 22 KB
+because the point is to stop maintaining chart behaviours ourselves.
 
 Vendored rather than loaded from a CDN: the panel must work on an installation with
-no internet access, and a third-party URL in an authenticated Home Assistant page is
-a supply chain the user did not ask for. The version is pinned and the file is
-served by the integration itself.
+no internet access, and a third-party URL inside an authenticated Home Assistant page
+is a supply chain the user did not ask for. The version is pinned, the file is served
+by the integration itself, and `tests/test_panel.py` checks that the version declared
+in the code matches this table.
 
 ## Updating
 
 ```bash
-npm pack uplot@<version>
-tar xzf uplot-<version>.tgz
-cp package/dist/uPlot.iife.min.js  custom_components/thermal_model/frontend/uplot.min.js
-cp package/dist/uPlot.min.css      custom_components/thermal_model/frontend/uplot.min.css
-cp package/LICENSE                 custom_components/thermal_model/frontend/uplot.LICENSE
-sha256sum custom_components/thermal_model/frontend/uplot.*   # update this table
+npm pack apexcharts@<version>
+tar xzf apexcharts-<version>.tgz
+cp package/dist/apexcharts.min.js  custom_components/thermal_model/frontend/apexcharts.min.js
+cp package/LICENSE                 custom_components/thermal_model/frontend/apexcharts.LICENSE
+sha256sum custom_components/thermal_model/frontend/apexcharts.min.js   # update this table
 ```
-
-`tests/test_panel.py` checks that the files are present, that the vendored version
-matches the one declared in the panel module, and that no remote URL appears in the
-frontend sources.

@@ -61,10 +61,12 @@ import: it is served and maintained by the integration, needs no custom card, an
 draws one time axis with 48 h of **measured** indoor temperature, the 48 h
 **forecasts** of each scenario, and the forecasts **issued 6 h / 12 h / 24 h ago**
 — the only way to see whether the model anticipates the house or merely agrees
-with itself. The chart is a vendored **uPlot** (MIT, 51 KB), so axes, cursor,
-legend and zoom are a library's job; the measured line breaks on real holes in the
-recorder history instead of drawing across them. A weather outage keeps the
-previous trajectories and flags them stale instead of blanking the page.
+with itself. Three separate panels (indoor, past forecast vs reality, outdoor) rather
+than one unreadable plot, drawn with a vendored **ApexCharts** (MIT) so axes with
+units, the shared tooltip, annotations and the legend are library features; the
+measured line breaks on real holes in the recorder history instead of drawing across
+them. A weather outage keeps the previous trajectories and flags them stale instead
+of blanking the page.
 
 An optional Lovelace dashboard ships too, in
 [`dashboards/thermal_model.yaml`](dashboards/thermal_model.yaml), for people who

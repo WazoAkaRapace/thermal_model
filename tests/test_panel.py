@@ -23,9 +23,8 @@ from custom_components.thermal_model.const import DOMAIN_KEY
 FRONTEND = Path(panel_module.__file__).parent / "frontend"
 PANEL_JS = FRONTEND / f"{panel_module.WEBCOMPONENT_NAME}.js"
 CHART_JS = FRONTEND / "thermal-model-chart.mjs"
-UPLOT_JS = FRONTEND / "uplot.min.js"
-UPLOT_CSS = FRONTEND / "uplot.min.css"
-UPLOT_LICENSE = FRONTEND / "uplot.LICENSE"
+LIBRARY_JS = FRONTEND / "apexcharts.min.js"
+LIBRARY_LICENSE = FRONTEND / "apexcharts.LICENSE"
 VENDOR_DOC = FRONTEND / "VENDOR.md"
 CHART_TEST = Path(__file__).parent / "js" / "chart_test.mjs"
 
@@ -104,16 +103,12 @@ async def test_every_frontend_file_is_served_as_javascript(
     for name, content_type in (
         (f"{panel_module.WEBCOMPONENT_NAME}.js", "text/javascript"),
         ("thermal-model-chart.mjs", "text/javascript"),
-        ("uplot.min.js", "text/javascript"),
+        ("apexcharts.min.js", "text/javascript"),
     ):
         response = await client.get(f"{base}/{name}")
         assert response.status == 200, name
         assert response.headers["Content-Type"].startswith(content_type), name
         assert response.headers["Cache-Control"] == "no-cache", name
-
-    css = await client.get(f"{base}/uplot.min.css")
-    assert css.status == 200
-    assert "text/css" in css.headers["Content-Type"]
 
 
 async def test_the_module_is_reachable_without_a_token(
@@ -132,8 +127,7 @@ async def test_the_module_is_reachable_without_a_token(
     for name in (
         f"{panel_module.WEBCOMPONENT_NAME}.js",
         "thermal-model-chart.mjs",
-        "uplot.min.js",
-        "uplot.min.css",
+        "apexcharts.min.js",
     ):
         response = await client.get(f"{base}/{name}")
         assert response.status == 200, f"{name} is not reachable without a token"
@@ -145,7 +139,7 @@ async def test_the_view_refuses_unknown_files(
     """No traversal, no serving arbitrary files out of the package."""
     client = await hass_client_no_auth()
 
-    for name in ("../__init__.py", "missing.js", "manifest.json", "panel.py", "uplot.LICENSE"):
+    for name in ("../__init__.py", "missing.js", "manifest.json", "panel.py", "apexcharts.LICENSE"):
         response = await client.get(f"/{DOMAIN_KEY}/frontend/1.0.0/{name}")
         assert response.status == 404, name
 
@@ -153,16 +147,18 @@ async def test_the_view_refuses_unknown_files(
 # -- the chart library ----------------------------------------------------
 def test_the_chart_library_is_vendored_with_its_licence() -> None:
     """A pinned copy, with its licence and a written reason for the choice."""
-    for path in (UPLOT_JS, UPLOT_CSS, UPLOT_LICENSE, VENDOR_DOC):
+    for path in (LIBRARY_JS, LIBRARY_LICENSE, VENDOR_DOC):
         assert path.exists(), f"missing vendored file: {path}"
 
-    license_text = UPLOT_LICENSE.read_text(encoding="utf-8")
+    license_text = LIBRARY_LICENSE.read_text(encoding="utf-8")
     assert "MIT License" in license_text
-    assert "Leon Sorokin" in license_text
+    assert "ApexCharts" in license_text
 
     # the version must be declared in exactly one place, and agree with the doc
-    version_match = re.search(r'UPLOT_VERSION = "([0-9.]+)"', CHART_JS.read_text(encoding="utf-8"))
-    assert version_match, "UPLOT_VERSION is not declared in the chart module"
+    version_match = re.search(
+        r'APEXCHARTS_VERSION = "([0-9.]+)"', CHART_JS.read_text(encoding="utf-8")
+    )
+    assert version_match, "APEXCHARTS_VERSION is not declared in the chart module"
     declared = version_match.group(1)
     assert declared in VENDOR_DOC.read_text(encoding="utf-8"), (
         f"VENDOR.md does not mention the vendored version {declared}"

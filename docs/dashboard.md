@@ -12,23 +12,28 @@ wherever the registry moves them.
   `/{domain}/frontend/{version}/thermal-model-panel.js`, authenticated, with
   `Content-Type: text/javascript` and `Cache-Control: no-cache`, and the version in
   the path so a browser never mixes an old module with new ones after an update;
-- the chart is drawn by **uPlot** (vendored, MIT, 51 KB raw / 22 KB gzipped), so
-  axes with time ticks, the shared cursor, the clickable legend, drag-to-zoom,
-  high-DPI rendering and gap handling come from a library instead of being
-  re-implemented. Nothing is fetched from a CDN and `requirements` stays empty.
+- the charts are drawn by **ApexCharts** (vendored, MIT, 576 KB raw / 153 KB
+  gzipped): axis tick values, axis titles with units, the shared tooltip, the "now"
+  annotation, the clickable legend and zoom are library features. Nothing is fetched
+  from a CDN and `requirements` stays empty.
 
 ### Chart library
 
-| Candidate | Why not |
+| Candidate | Verdict |
 |---|---|
-| ApexCharts (~570 KB) | the same lib as apexcharts-card, but 11× the size for one chart |
-| ECharts (~1 MB) | far too heavy for a panel served to every user, mobile included |
-| Chart.js (~200 KB) | needs a date adapter and plugins to reach time-series parity |
+| **ApexCharts** | **chosen**: the library HA users already have through apexcharts-card, so the interactions are the expected ones |
+| uPlot (~22 KB gzipped) | tried first for its size, and it cost three bugs in a row (axis values vanishing under the cursor, a hand-written tooltip, a custom draw hook for the "now" line) |
+| ECharts (~1 MB) | too heavy for a panel served to every user, mobile included |
 | hand-rolled SVG | what this replaced: every basic feature had to be written and tested by hand |
 
-uPlot is vendored in `frontend/` with its licence and a SHA-256 table in
+ApexCharts is vendored in `frontend/` with its licence and a SHA-256 table in
 [`VENDOR.md`](../custom_components/thermal_model/frontend/VENDOR.md); the version is
 declared once, in `thermal-model-chart.mjs`, and a test checks the two agree.
+
+Panels do **not** share an ApexCharts `chart.group`: group sync expects the same
+series on every chart, and with 3/4/2 series the shared tooltip reported the first
+series three times. Coherence comes from the shared time window, the shared colours
+and the same axis unit.
 
 ### What it draws
 
