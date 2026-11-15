@@ -55,6 +55,7 @@ def test_package_imports_are_stdlib_or_homeassistant() -> None:
         "json",
         "logging",
         "math",
+        "mimetypes",
         "pathlib",
         "sqlite3",
         "statistics",

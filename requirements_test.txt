@@ -10,4 +10,8 @@
 pytest>=8.0
 pytest-asyncio>=0.24
 pytest-homeassistant-custom-component>=0.13.375
+# The panel makes the integration depend on panel_custom, which depends on
+# frontend, which imports hass_frontend: without the built frontend package the
+# whole config entry cannot be set up in tests.
+home-assistant-frontend==20260930.5
 ruff>=0.7

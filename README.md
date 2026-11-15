@@ -54,18 +54,27 @@ Identification details, the estimator that avoids measurement-noise bias, the id
 diagnostics and the reasons a parameter can honestly come back as `unknown` are documented in
 [`docs/`](docs/).
 
-## Dashboard
+## Panels and dashboards
 
-A ready-to-import Lovelace dashboard ships in
-[`dashboards/thermal_model.yaml`](dashboards/thermal_model.yaml). It plots 48 h of
-**measured** indoor temperature, the 48 h **forecasts** of each scenario, and the
-forecasts **issued 6 h / 12 h / 24 h ago** on the same axis — the only way to see
-whether the model anticipates the house or merely agrees with itself. A second view
-uses built-in cards only, so the dashboard is usable without any custom card.
+The integration registers **its own sidebar panel** (`/thermal-model`). Nothing to
+import: it is served and maintained by the integration, needs no custom card and
+no framework, and draws one time axis with 48 h of **measured** indoor
+temperature, the 48 h **forecasts** of each scenario, and the forecasts **issued
+6 h / 12 h / 24 h ago** — the only way to see whether the model anticipates the
+house or merely agrees with itself. A weather outage keeps the previous
+trajectories and flags them stale instead of blanking the page.
 
-See [`docs/dashboard.md`](docs/dashboard.md) for the import steps and the attributes
-the cards read. `tests/test_dashboard.py` parses the YAML and fails if it references
-an entity or attribute that does not exist.
+An optional Lovelace dashboard ships too, in
+[`dashboards/thermal_model.yaml`](dashboards/thermal_model.yaml), for people who
+prefer native cards (apexcharts-card for the first view, built-in cards for the
+second).
+
+See [`docs/dashboard.md`](docs/dashboard.md). The frontends are covered by tests
+that would otherwise only fail in a browser: `tests/test_panel.py` (sidebar entry,
+served module, real entity ids, path traversal, `node --check` no external
+dependency), `tests/js/panel_smoke.mjs` (runs the real render path in node against
+a stubbed DOM) and `tests/test_dashboard.py` (every YAML reference against a live
+entry).
 
 ## Status
 

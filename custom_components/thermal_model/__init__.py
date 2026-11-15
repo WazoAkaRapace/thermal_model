@@ -79,6 +79,7 @@ class ThermalModelRuntimeData:
     sources: SourceBinding
     settings: ModelSettings
     slug: str = "thermal_model"
+    panel_title: str = "Thermal Model"
     missing_entities: set[str] = field(default_factory=set)
     # Runtime-tunable numbers: the number platform owns their persistence
     # (RestoreEntity), the coordinator only reads them.
@@ -162,6 +163,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
         ),
         slug=f"thermal_model_{entry.entry_id[:6]}",
+        panel_title=entry.title or "Thermal Model",
         tunables=build_tunables(data, options),
         scenarios=build_scenarios(data, options),
     )
@@ -199,6 +201,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # the entities instead of blocking setup.
     await coordinator.async_refresh()
 
+    # The panel needs the entity ids to exist, so it is registered after the
+    # platforms: an entity id is the registry's business, not a string we guess.
+    from .panel import async_register_panel
+
+    await async_register_panel(hass, entry.entry_id, runtime)
+
     return True
 
 
@@ -206,6 +214,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     runtime: ThermalModelRuntimeData | None = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime, "coordinator", None)
+
+    from .panel import async_unregister_panel
+
+    await async_unregister_panel(hass)
 
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded and coordinator is not None:

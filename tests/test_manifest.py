@@ -50,7 +50,16 @@ def test_version_is_semver() -> None:
 def test_recorder_is_an_after_dependency() -> None:
     """We read the recorder but must not block HA start when it is absent."""
     assert "recorder" in MANIFEST["after_dependencies"]
-    assert MANIFEST["dependencies"] == []
+
+
+def test_dependencies_are_only_what_the_panel_needs() -> None:
+    """`http` and `panel_custom` only: the panel is the one hard requirement.
+
+    The recorder stays an *after* dependency even though the panel plots its
+    history: making it a hard dependency would refuse to start the integration on
+    an installation without the recorder, for a chart the panel can degrade on.
+    """
+    assert sorted(MANIFEST["dependencies"]) == ["http", "panel_custom"]
 
 
 def test_translations_cover_every_step() -> None:

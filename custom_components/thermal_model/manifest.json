@@ -5,12 +5,12 @@
   "categories": ["climate"],
   "codeowners": ["@WazoAkaRapace"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http", "panel_custom"],
   "documentation": "https://github.com/WazoAkaRapace/thermal_model",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/WazoAkaRapace/thermal_model/issues",
   "quality_scale": "bronze",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
