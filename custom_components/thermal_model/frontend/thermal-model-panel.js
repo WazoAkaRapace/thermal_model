@@ -17,8 +17,10 @@ import {
   buildAxes,
   buildChartData,
   buildSeriesConfig,
+  parseHistoryRows,
   summarise,
   temperatureRange,
+  toMillis,
 } from "./thermal-model-chart.mjs";
 
 const CHART_HEIGHT = 360;
@@ -181,8 +183,8 @@ class ThermalModelPanel extends HTMLElement {
         significant_changes_only: false,
       });
       this._history = {
-        indoor: parseHistory(result[config.indoor_entity]),
-        outdoor: parseHistory(result[config.source_outdoor_entity]),
+        indoor: parseHistoryRows(result[config.indoor_entity]),
+        outdoor: parseHistoryRows(result[config.source_outdoor_entity]),
       };
       this._historyError = null;
     } catch (err) {
@@ -479,26 +481,6 @@ class ThermalModelPanel extends HTMLElement {
       value: Math.max(0, Number(value.toFixed(4))),
     });
   }
-}
-
-/**
- * The websocket returns a full state object first, then {s, lu} deltas. Both
- * shapes are accepted, and anything unparsable is skipped rather than plotted as
- * zero.
- */
-function parseHistory(rows) {
-  if (!Array.isArray(rows)) return [];
-  const points = [];
-  for (const row of rows) {
-    if (!row) continue;
-    const raw = row.s !== undefined ? row.s : row.state;
-    const stamp =
-      row.lu !== undefined ? row.lu : row.lc !== undefined ? row.lc : row.last_changed;
-    const value = Number.parseFloat(raw);
-    if (Number.isFinite(value) && stamp) points.push([new Date(stamp).getTime(), value]);
-  }
-  points.sort((a, b) => a[0] - b[0]);
-  return points;
 }
 
 customElements.define("thermal-model-panel", ThermalModelPanel);

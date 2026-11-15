@@ -18,7 +18,9 @@ import {
   buildChartData,
   buildSeriesConfig,
   summarise,
+  parseHistoryRows,
   temperatureRange,
+  toMillis,
 } from "../../custom_components/thermal_model/frontend/thermal-model-chart.mjs";
 
 const failures = [];
@@ -209,6 +211,49 @@ equal(summary.current, 20.4, "summary current temperature is wrong");
 check(summary.minimum !== null && summary.minimum <= 18.9, "summary minimum is wrong");
 check(summary.seriesCount >= 2, "summary should count the indoor trajectories");
 check(summary.windowHours > 0, "summary window is empty");
+
+// -- timestamps: the bug that squashed the chart ----------------------
+// With minimal_response, the history websocket sends the first row as a full
+// state (ISO last_changed) and every following row as {s, lu} with lu in
+// **seconds**. Read as milliseconds, those points land in 1970 and the real 48 h
+// window collapses into a vertical line at the right edge of the plot.
+equal(toMillis(NOW), NOW, "millisecond epoch");
+equal(toMillis(NOW / 1000), NOW, "second epoch (the compressed-history shape)");
+equal(toMillis("2026-01-10T12:00:00Z"), NOW, "ISO string");
+check(Number.isNaN(toMillis(null)), "null must be NaN");
+check(Number.isNaN(toMillis("nonsense")), "garbage must be NaN");
+equal(toMillis(1794900000.123), 1794900000123, "float seconds must round to ms");
+
+const mixedHistory = {
+  indoor: parseHistoryRows([
+    // first row as Home Assistant sends it: a full state, ISO timestamp
+    { state: "19.6", last_changed: new Date(NOW - 5 * HOUR).toISOString() },
+    // then compressed rows, epoch in seconds
+    ...Array.from({ length: 5 }, (_, index) => ({
+      s: String(19.6 + index * 0.1),
+      lu: (NOW - (4 - index) * HOUR) / 1000,
+    })),
+  ]),
+  outdoor: [],
+};
+const mixed = buildChartData({ history: mixedHistory, forecasts, nowMs: NOW });
+
+check(mixed.x.length > 0, "mixed history produced no axis");
+check(
+  mixed.x.every((stamp) => stamp > 1.6e9),
+  `an axis point is not a 2020s timestamp (first: ${mixed.x[0]}) — seconds read as ms`,
+);
+const spanHours = (mixed.x[mixed.x.length - 1] - mixed.x[0]) / 3600;
+check(
+  spanHours < 200,
+  `axis spans ${spanHours.toFixed(1)} h: the window is being stretched by a wrong epoch`,
+);
+const mixedSeries = Object.fromEntries(mixed.series.map((entry) => [entry.id, entry]));
+equal(
+  mixedSeries.measured.values.filter((value) => value !== null).length,
+  6,
+  "every history point must land on the axis",
+);
 
 // -- degenerate input -------------------------------------------------
 const empty = buildChartData({ history: { indoor: [], outdoor: [] }, forecasts: {}, nowMs: NOW });

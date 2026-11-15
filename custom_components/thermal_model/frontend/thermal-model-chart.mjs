@@ -36,6 +36,51 @@ const HOUR_MS = 3600 * 1000;
 /** Seconds, which is what uPlot wants on a time axis. */
 const toSeconds = (ms) => Math.round(ms / 1000);
 
+/**
+ * Any timestamp Home Assistant sends, in milliseconds.
+ *
+ * This one line is the whole bug that made the chart look squashed: with
+ * `minimal_response`, the history websocket returns the *first* row of an entity
+ * as a full state object (ISO `last_changed`), then every following row as
+ * `{s, lu}` where `lu` is an **epoch in seconds**. Feeding those straight to
+ * `new Date()` reads them as milliseconds, so fifty measured points landed in
+ * January 1970 and the real 48 h window was compressed into a vertical line at
+ * the right edge of the plot.
+ *
+ * Anything below 1e11 cannot be a millisecond epoch (that would be 1973).
+ */
+export function toMillis(stamp) {
+  if (stamp === null || stamp === undefined) return Number.NaN;
+  if (typeof stamp === "number") {
+    return Number.isFinite(stamp) ? (stamp < 1e11 ? Math.round(stamp * 1000) : stamp) : Number.NaN;
+  }
+  const parsed = new Date(stamp).getTime();
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+/**
+ * Parse the history websocket payload into `[[ms, value]]`.
+ *
+ * Shape sent by Home Assistant with `minimal_response`: the first row of an
+ * entity is a full state object (ISO `last_changed`), every following row is
+ * `{s, lu}` with `lu` in **seconds**. `toMillis` normalises both; anything
+ * unparsable is skipped rather than plotted as zero or as 1970.
+ */
+export function parseHistoryRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  const points = [];
+  for (const row of rows) {
+    if (!row) continue;
+    const raw = row.s !== undefined ? row.s : row.state;
+    const stamp = row.lu !== undefined ? row.lu : row.lc !== undefined ? row.lc : row.last_changed;
+    const value = Number.parseFloat(raw);
+    const millis = toMillis(stamp);
+    if (Number.isFinite(value) && Number.isFinite(millis)) points.push([millis, value]);
+  }
+  points.sort((a, b) => a[0] - b[0]);
+  return points;
+}
+
 /** Sampling interval of a series, robust to a few long holes. */
 function medianInterval(points) {
   if (!points || points.length < 3) return 0;
@@ -78,10 +123,10 @@ function buildTimestamps({ history, forecasts }) {
   for (const mark of gapMarks(history.indoor || [])) stamps.add(mark);
   for (const mark of gapMarks(history.outdoor || [])) stamps.add(mark);
   for (const attributes of Object.values(forecasts)) {
-    for (const stamp of attributes.times || []) stamps.add(new Date(stamp).getTime());
-    for (const stamp of attributes.weather_times || []) stamps.add(new Date(stamp).getTime());
+    for (const stamp of attributes.times || []) stamps.add(toMillis(stamp));
+    for (const stamp of attributes.weather_times || []) stamps.add(toMillis(stamp));
     for (const run of attributes.archived_runs || []) {
-      for (const stamp of run.times || []) stamps.add(new Date(stamp).getTime());
+      for (const stamp of run.times || []) stamps.add(toMillis(stamp));
     }
   }
   return [...stamps].filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
@@ -152,7 +197,7 @@ export function buildChartData({ history, forecasts, nowMs }) {
     const label = LABELS[scenario] || scenario;
 
     const points = (attributes.times || []).map((stamp, position) => [
-      new Date(stamp).getTime(),
+      toMillis(stamp),
       attributes.values[position],
     ]);
     const values = alignPoints(points, index);
@@ -169,7 +214,7 @@ export function buildChartData({ history, forecasts, nowMs }) {
 
     for (const [position, run] of (attributes.archived_runs || []).entries()) {
       const archivedPoints = (run.times || []).map((stamp, pointIndex) => [
-        new Date(stamp).getTime(),
+        toMillis(stamp),
         run.values[pointIndex],
       ]);
       const archivedValues = alignPoints(archivedPoints, index);
@@ -188,7 +233,7 @@ export function buildChartData({ history, forecasts, nowMs }) {
 
     if (!weatherForecastAdded && (attributes.weather_times || []).length) {
       const weatherPoints = attributes.weather_times.map((stamp, position) => [
-        new Date(stamp).getTime(),
+        toMillis(stamp),
         attributes.weather_outdoor[position],
       ]);
       const weatherValues = alignPoints(weatherPoints, index);
