@@ -41,7 +41,7 @@ from .const import (
     ModelScenario,
 )
 from .core.forecast import ForecastRun, WeatherStep, build_run
-from .core.simulate import ThermalParams
+from .core.simulate import ModelDivergedError, ThermalParams
 from .db import Database, StoredRun
 from .sources import WeatherError, fetch_weather
 
@@ -325,9 +325,16 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
                     setpoint=self._tunable(KEY_SETPOINT),
                     capacity_kw=self._tunable(KEY_CAPACITY),
                 )
-            except ValueError as err:  # pragma: no cover - guarded upstream
+            except (ValueError, ModelDivergedError) as err:
+                # A scenario that diverges must not take the whole update down: the
+                # other scenario, the measurements and the parameters are still good,
+                # and the previous run for this one stays visible until the next cycle.
                 _LOGGER.warning("Thermal Model: scenario %s failed: %s", scenario, err)
+                previous = self.runtime.last_runs.get(str(scenario))
+                if previous is not None:
+                    runs[str(scenario)] = previous
 
+        self.runtime.last_runs = dict(runs)
         for run in runs.values():
             await self.hass.async_add_executor_job(self.database.record_run, run)
         await self.hass.async_add_executor_job(

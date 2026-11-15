@@ -91,12 +91,21 @@ async def async_read_statistics(
     hass: HomeAssistant,
     statistic_ids: Sequence[str],
     days: int,
+    *,
+    prefer: str = "mean",
 ) -> dict[str, list[StatisticPoint]]:
-    """Hourly statistics for the given ids, over the last ``days``."""
+    """Hourly statistics for the given ids, over the last ``days``.
+
+    ``prefer="change"`` is what an energy counter needs: its ``mean`` is the meter
+    reading, and summing readings produces nonsense — the consumption of an hour is its
+    ``change``.
+    """
     end = datetime.now(UTC)
     start = end - timedelta(days=days)
     try:
-        return await hass.async_add_executor_job(_read, hass, set(statistic_ids), start, end)
+        return await hass.async_add_executor_job(
+            _read, hass, set(statistic_ids), start, end, prefer
+        )
     except Exception as err:  # recorder not set up, database locked, …
         _LOGGER.debug("Thermal Model: statistics unavailable: %s", err)
         return {}

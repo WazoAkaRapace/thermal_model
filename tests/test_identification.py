@@ -427,3 +427,33 @@ async def test_a_kwh_counter_alone_identifies_the_whole_model(
     # the four coefficients must land near the house that generated the data
     assert abs(float(hass.states.get("number.home_heating_gain_k").state) - 0.30) < 0.1
     assert 0.005 < float(state.state) < 0.06
+
+
+async def test_an_implausible_k_is_refused_instead_of_breaking_the_forecast(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+) -> None:
+    """5 K/kWh at 2 kW is 10 K/h: the scenario diverges and every entity goes away."""
+    # a meter whose fit produces an impossible gain: 500 W constant for 24 h
+    data = statistics_reader
+    for moment in list(data[PAC]):
+        data[PAC][moment] = 500.0
+    await setup_entry.runtime_data.coordinator.async_identify()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("number.home_heating_gain_k")
+    identification = state.attributes["identification"]
+    k = float(state.state)
+    capacity = float(hass.states.get("number.home_heating_capacity").state)
+    assert 0.02 <= k * capacity <= 3.0, (
+        f"k = {k} K/kWh with {capacity} kW implies {k * capacity} K/h: "
+        f"{identification.get('notes')}"
+    )
+    # and the forecast entities must still be there
+    assert hass.states.get("sensor.home_forecast_free_float").state not in (
+        "unavailable",
+        "unknown",
+    )

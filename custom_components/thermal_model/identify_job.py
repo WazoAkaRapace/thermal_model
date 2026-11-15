@@ -11,7 +11,7 @@ weeks rather than the recorder's ~10-day purge.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -190,6 +190,20 @@ async def async_identify_model(
 
     daily = inputs.daily_k
     k_source = "daily_energy" if (daily is not None and daily.ok) else "hourly"
+    # A k that implies an impossible rise at full power is not a parameter, it is a
+    # bad fit: publishing it makes the thermostat scenario diverge (measured: 5.25
+    # K/kWh × 2 kW = 10.5 K/h). Refuse it instead of publishing a broken model.
+    capacity = float(runtime.tunables.get("capacity", 2.0) or 2.0)
+    if result.params is not None and result.params.k is not None:
+        implied = result.params.k * capacity
+        if not 0.02 <= implied <= 3.0:
+            notes = (
+                *notes,
+                f"k = {result.params.k:.3f} K/kWh impliquerait {implied:.1f} K/h à "
+                f"{capacity:.1f} kW : rejeté",
+            )
+            result = replace(result, params=replace(result.params, k=None))
+
     identified_days = max(1, round(len(inputs.times) / 24))
     coverage = (
         sum(1 for value in inputs.tin if value is not None) / len(inputs.tin) if inputs.tin else 0.0

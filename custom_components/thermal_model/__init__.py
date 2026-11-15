@@ -93,6 +93,9 @@ class ThermalModelRuntimeData:
     power_options: list[str] = field(default_factory=list)
     selected_power_sensor: str | None = None
     scenarios: tuple[ModelScenario, ...] = ()
+    # Last successful run per scenario, kept so a diverging simulation never blanks
+    # the entities it already published.
+    last_runs: dict[str, Any] = field(default_factory=dict)
     storage_path: Path | None = None
 
 
