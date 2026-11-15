@@ -231,6 +231,30 @@ def power_candidates(
     return chosen
 
 
+async def _series_for_sensor(hass: HomeAssistant, sensor: str, days: int) -> dict[datetime, float]:
+    """Hourly values for a sensor, from statistics or, failing that, from raw history.
+
+    A sensor without ``state_class`` never gets long-term statistics — measured on a
+    real installation: 949 states over 10 days, 0 statistics — and the identification
+    must not silently replace the sensor the user chose with a mean of every
+    thermometer in the house. Raw history only survives the recorder purge, but a week
+    of the right sensor beats three weeks of the wrong series.
+    """
+
+    from .sources.recorder import async_collect
+
+    series = await async_read_statistics(hass, [sensor], days)
+    points = _points(series).get(sensor) or {}
+    if points:
+        return points
+
+    collected = await async_collect(hass, [sensor], days, step_minutes=60)
+    history = collected.get(sensor)
+    if history is None:
+        return {}
+    return {moment: value for moment, value in history.points if value is not None}
+
+
 def _mean_series(series: dict[str, dict[datetime, float]]) -> tuple[list[datetime], list[float]]:
     """Hours present in every series, with the mean across them."""
     if not series:
@@ -322,10 +346,22 @@ async def build_inputs(
     first_points = _points(first_pass)
     outdoor_points = first_points.get(outdoor_sensor) or {}
     if not outdoor_points:
-        inputs.reasons.append(f"aucune statistique horaire pour {outdoor_sensor}")
-        return inputs, None
+        # the bound outdoor sensor may lack state_class too
+        outdoor_points = await _series_for_sensor(hass, outdoor_sensor, days)
+        if not outdoor_points:
+            inputs.reasons.append(f"aucune statistique ni aucun historique pour {outdoor_sensor}")
+            return inputs, None
+        inputs.reasons.append(f"{outdoor_sensor}: pas de statistiques, historique brut utilisé")
 
     indoor_points = first_points.get(indoor_sensor) or {}
+    if not indoor_points:
+        raw_indoor = await _series_for_sensor(hass, indoor_sensor, days)
+        if len(raw_indoor) >= 24 * MIN_INDOOR_DAYS:
+            indoor_points = raw_indoor
+            inputs.reasons.append(
+                f"{indoor_sensor}: pas de statistiques (state_class manquant ?), "
+                "historique brut utilisé"
+            )
     indoor_sources: list[str] = []
     indoor_series: dict[str, dict[datetime, float]] = {}
     if len(indoor_points) >= 24 * MIN_INDOOR_DAYS:

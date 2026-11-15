@@ -92,6 +92,14 @@ def identify_k_from_daily_energy(
         energy[day] += float(energy_kwh[index] or 0.0)
         hours[day] += 1
 
+    _LOGGER.debug(
+        "Thermal Model: daily balance sees %s days, energy %.1f kWh, first day %s, "
+        "steps per day %s",
+        len(passive),
+        sum(energy.values()),
+        sorted(passive, key=str)[0] if passive else None,
+        sorted(set(hours.values()))[:3],
+    )
     usable: list[tuple[float, float]] = []
     for day in sorted(passive, key=str):
         if hours[day] < 12:  # a partial day would bias the balance

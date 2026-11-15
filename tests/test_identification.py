@@ -457,3 +457,37 @@ async def test_an_implausible_k_is_refused_instead_of_breaking_the_forecast(
         "unavailable",
         "unknown",
     )
+
+
+async def test_the_bound_sensor_is_read_from_raw_history_when_it_has_no_statistics(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """949 states, 0 statistics: the user's sensor, not a house-wide mean."""
+    data = statistics_reader
+    indoor_series = data.pop("sensor.indoor_temperature")  # no statistics at all
+
+    points = sorted(indoor_series.items())  # its raw history, hourly
+    import custom_components.thermal_model.model_inputs as mi
+
+    async def fake_series_for(hass_, sensor, days):
+        if sensor == "sensor.indoor_temperature":
+            return dict(points)
+        return statistics_reader.get(sensor) or {}
+
+    monkeypatch.setattr(mi, "_series_for_sensor", fake_series_for)
+
+    await setup_entry.runtime_data.coordinator.async_identify()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("number.home_wall_loss_a")
+    identification = state.attributes["identification"]
+    assert state.attributes["params_source"] == "identified", identification
+    assert identification["indoor_sources"] == ["sensor.indoor_temperature"], (
+        "the bound sensor must be used, not replaced by a mean of every thermometer"
+    )
+    assert any("historique brut" in str(note) for note in identification["notes"])

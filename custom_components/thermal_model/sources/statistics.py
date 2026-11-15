@@ -36,6 +36,24 @@ class StatisticPoint:
         return f"StatisticPoint({self.moment.isoformat()}, {self.value})"
 
 
+def _to_moment(start: Any) -> datetime | None:
+    """A statistics timestamp, whichever unit the caller used.
+
+    The in-process recorder returns ``start`` as the raw ``start_ts`` column, in epoch
+    *seconds*; the websocket API converts it to *milliseconds* first. Dividing seconds
+    by 1000 put the whole series in 1970 — which silently killed everything that
+    depends on the date: the daily energy balance grouped three weeks into one fake
+    day, and the irradiance lookup matched no hour, so the solar input was always zero.
+    """
+    if isinstance(start, datetime):
+        return start
+    if not isinstance(start, (int, float)):
+        return None
+    if start > 1e11:  # milliseconds since 1970 (a value in seconds would be ~1.7e9)
+        start = start / 1000
+    return datetime.fromtimestamp(start, UTC)
+
+
 def _rows_to_points(rows: Sequence[dict[str, Any]], prefer: str) -> list[StatisticPoint]:
     """Turn statistics rows into points, taking `mean` or `change`."""
     points: list[StatisticPoint] = []
@@ -46,9 +64,7 @@ def _rows_to_points(rows: Sequence[dict[str, Any]], prefer: str) -> list[Statist
         if value is None:
             continue
         start = row.get("start")
-        moment = (
-            datetime.fromtimestamp(start / 1000, UTC) if isinstance(start, (int, float)) else start
-        )
+        moment = _to_moment(start)
         if not isinstance(moment, datetime):
             continue
         points.append(StatisticPoint(moment, float(value)))
@@ -103,7 +119,11 @@ async def async_read_statistics(
     end = datetime.now(UTC)
     start = end - timedelta(days=days)
     try:
-        return await hass.async_add_executor_job(
+        from homeassistant.components.recorder import get_instance
+
+        # The recorder's own executor, not the generic one: HA warns that a database
+        # access anywhere else slows the instance down.
+        return await get_instance(hass).async_add_executor_job(
             _read, hass, set(statistic_ids), start, end, prefer
         )
     except Exception as err:  # recorder not set up, database locked, …
