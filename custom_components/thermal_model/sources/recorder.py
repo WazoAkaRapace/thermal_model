@@ -72,8 +72,9 @@ def async_read_states(
 ) -> dict[str, HistorySeries]:
     """Fetch the significant states of several entities, synchronously.
 
-    Call it through ``hass.async_add_executor_job``: this touches the recorder
-    database.
+    Call it through the recorder's executor (``get_instance(hass).async_add_executor_job``):
+    the generic one works but HA warns that database access anywhere else slows the
+    instance down.
     """
     # Import the submodule itself: `from homeassistant.components.recorder import
     # history` can bind None, because that attribute is populated lazily by the
@@ -137,7 +138,9 @@ async def async_collect(
     days: int,
     step_minutes: int,
 ) -> dict[str, HistorySeries]:
-    """Async wrapper: read the recorder in the executor."""
+    """Async wrapper: read the recorder in its own executor."""
+    from homeassistant.components.recorder import get_instance
+
     end = datetime.now(UTC)
     start = end - timedelta(days=days)
     # Align the grid on step boundaries: statistics hours sit exactly on :00, and a
@@ -145,6 +148,10 @@ async def async_collect(
     # "0 heures communes entre l'intérieur et l'extérieur" on a real installation.
     end = end.replace(minute=0, second=0, microsecond=0)
     start = start.replace(minute=0, second=0, microsecond=0)
-    return await hass.async_add_executor_job(
-        async_read_states, hass, list(entity_ids), start, end, step_minutes
-    )
+    try:
+        return await get_instance(hass).async_add_executor_job(
+            async_read_states, hass, list(entity_ids), start, end, step_minutes
+        )
+    except Exception as err:  # recorder not set up, database locked, …
+        _LOGGER.debug("Thermal Model: recorder history unavailable: %s", err)
+        return {}

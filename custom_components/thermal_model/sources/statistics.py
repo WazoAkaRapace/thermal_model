@@ -134,7 +134,9 @@ async def async_read_statistics(
 async def async_list_statistic_ids(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Every statistic id with its metadata: name, unit, state_class."""
     try:
-        return await hass.async_add_executor_job(_list_ids, hass)
+        from homeassistant.components.recorder import get_instance
+
+        return await get_instance(hass).async_add_executor_job(_list_ids, hass)
     except Exception as err:  # pragma: no cover - recorder not ready
         _LOGGER.debug("Thermal Model: statistics list unavailable: %s", err)
         return []
