@@ -39,7 +39,7 @@ class FakeElement {
     return shadow;
   }
 }
-let rafQueue = [];
+let timerQueue = [];
 const sandbox = {
   HTMLElement: FakeElement,
   customElements: { define: (name, klass) => (defined = { name, klass }) },
@@ -50,10 +50,11 @@ const sandbox = {
     clearInterval() {},
     cancelAnimationFrame() {},
   },
-  requestAnimationFrame: (callback) => {
-    rafQueue.push(callback);
-    return rafQueue.length;
+  setTimeout: (callback) => {
+    timerQueue.push(callback);
+    return timerQueue.length;
   },
+  clearTimeout: () => {},
   document: { head: { appendChild() {} }, createElement: () => new FakeElement() },
   Date,
   Number,
@@ -66,13 +67,14 @@ const sandbox = {
 };
 // globals are what the module touches at import time and while rendering
 for (const [key, value] of Object.entries(sandbox)) {
-  if (key !== "window" && key !== "document" && key !== "requestAnimationFrame") {
+  if (key !== "window" && key !== "document" && key !== "setTimeout" && key !== "clearTimeout") {
     globalThis[key] = value;
   }
 }
+globalThis.setTimeout = sandbox.setTimeout;
+globalThis.clearTimeout = sandbox.clearTimeout;
 globalThis.window = sandbox.window;
 globalThis.document = sandbox.document;
-globalThis.requestAnimationFrame = sandbox.requestAnimationFrame;
 await import(panelPath);
 
 check(defined !== null, "the panel element was never defined");
@@ -82,9 +84,9 @@ if (!defined) {
 }
 
 const drainFrames = () => {
-  // one animation frame per scheduled render
-  const queue = rafQueue;
-  rafQueue = [];
+  // one coalescing timer per scheduled render
+  const queue = timerQueue;
+  timerQueue = [];
   for (const callback of queue) callback();
 };
 

@@ -139,7 +139,7 @@ class ThermalModelPanel extends HTMLElement {
 
   disconnectedCallback() {
     if (this._historyTimer) window.clearInterval(this._historyTimer);
-    if (this._frame) window.cancelAnimationFrame(this._frame);
+    if (this._frame) clearTimeout(this._frame);
     for (const entry of this._charts.values()) {
       if (entry.observer) entry.observer.disconnect();
       if (entry.chart) entry.chart.destroy();
@@ -448,14 +448,15 @@ class ThermalModelPanel extends HTMLElement {
   _scheduleRender(force = false) {
     if (force) this._textCache.clear();
     if (this._frame) return;
-    const run = () => {
+    // A coalescing timeout rather than requestAnimationFrame: rAF does not fire in
+    // a background tab or a headless browser, and the panel must still render.
+    this._frame = setTimeout(() => {
       this._frame = null;
-      this._update().catch(() => {});
-    };
-    this._frame =
-      typeof requestAnimationFrame === "function"
-        ? requestAnimationFrame(run)
-        : setTimeout(run, 16);
+      this._update().catch((err) => {
+        // Never swallow: a silent failure here means a blank panel with no clue.
+        console.error("Thermal Model panel: render failed", err);
+      });
+    }, 16);
   }
 
   _update() {
