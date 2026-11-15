@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .openmeteo import WeatherError, fetch_weather
+from .openmeteo import WeatherError, fetch_past_weather, fetch_weather
 
-__all__ = ["WeatherError", "fetch_weather"]
+__all__ = ["WeatherError", "fetch_past_weather", "fetch_weather"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -85,6 +86,9 @@ class ThermalModelRuntimeData:
     # (RestoreEntity), the coordinator only reads them.
     tunables: dict[str, float] = field(default_factory=dict)
     params_source: str = "manual_default"
+    options: dict[str, Any] = field(default_factory=dict)
+    entry_data: dict[str, Any] = field(default_factory=dict)
+    identification: Any = None  # IdentificationOutcome, imported lazily
     scenarios: tuple[ModelScenario, ...] = ()
     storage_path: Path | None = None
 
@@ -164,6 +168,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         slug=f"thermal_model_{entry.entry_id[:6]}",
         panel_title=entry.title or "Thermal Model",
+        options=dict(options),
+        entry_data=dict(data),
         tunables=build_tunables(data, options),
         scenarios=build_scenarios(data, options),
     )
@@ -205,6 +211,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # unknown when the first refresh runs, and a moving temperature must not be
     # plotted against a stale starting point.
     coordinator.async_start()
+
+    # Identify the model from the recorder history: without this the published
+    # parameters are the reference house's, which makes the forecast decorative.
+    hass.async_create_task(coordinator.async_identify(), "thermal_model identify")
 
     # The panel needs the entity ids to exist, so it is registered after the
     # platforms: an entity id is the registry's business, not a string we guess.

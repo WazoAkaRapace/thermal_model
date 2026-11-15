@@ -25,7 +25,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.debounce import Debouncer
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import ModelSettings, SourceBinding, ThermalModelRuntimeData
@@ -72,6 +72,9 @@ ARCHIVE_TOLERANCE_HOURS = 2.5
 # curves are actually distinguishable.
 MIN_ARCHIVE_SEPARATION_SECONDS = 45 * 60
 LIVE_REFRESH_COOLDOWN = timedelta(minutes=2)
+# The model is re-identified daily: the parameters drift with the season, and one
+# identification per day is cheap (a few seconds of recorder reads).
+IDENTIFY_INTERVAL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -115,6 +118,7 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         self.database = database
         self._last_bundle: ForecastBundle | None = None
         self._unsub_state: Callable[[], None] | None = None
+        self._unsub_identify: Callable[[], None] | None = None
         self._debouncer = Debouncer(
             self.hass,
             _LOGGER,
@@ -140,14 +144,68 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         self._unsub_state = async_track_state_change_event(
             self.hass, [self.sources.indoor_sensor], self._handle_indoor_change
         )
+        self._unsub_identify = async_track_time_interval(
+            self.hass, self._handle_identify_tick, IDENTIFY_INTERVAL
+        )
 
     async def async_shutdown(self) -> None:
         """Stop following the sensor when the entry unloads."""
         if self._unsub_state is not None:
             self._unsub_state()
             self._unsub_state = None
+        if self._unsub_identify is not None:
+            self._unsub_identify()
+            self._unsub_identify = None
         self._debouncer.async_cancel()
         await super().async_shutdown()
+
+    @callback
+    def _handle_identify_tick(self, _now: datetime) -> None:
+        """Daily re-identification."""
+        self.hass.async_create_task(self.async_identify(), "thermal_model identify (daily)")
+
+    async def async_identify(self) -> None:
+        """Fit the model on the recorded history and publish the parameters.
+
+        This is what makes the forecasts mean something: without it the numbers are
+        the reference house's defaults. When the data cannot support an
+        identification, the reason is published instead of a plausible number.
+        """
+        from .identify_job import async_identify_model
+
+        outcome = await async_identify_model(
+            self.hass, self.runtime, days=self.settings.history_days
+        )
+        self.runtime.identification = outcome
+
+        if outcome.ok and outcome.params is not None:
+            params = outcome.params
+            self.runtime.tunables[KEY_A] = params.a
+            self.runtime.tunables[KEY_C_S] = params.c_s
+            self.runtime.tunables[KEY_D] = params.d
+            if params.k is not None:
+                self.runtime.tunables[KEY_K] = params.k
+            self.runtime.params_source = "identified"
+            _LOGGER.info(
+                "Thermal Model: identified a=%.5f c_s=%.5f d=%+.4f k=%s (%s, %s days, %s samples)",
+                params.a,
+                params.c_s,
+                params.d,
+                "none" if params.k is None else f"{params.k:.3f}",
+                outcome.identifiability,
+                outcome.days,
+                outcome.samples,
+            )
+        else:
+            _LOGGER.warning(
+                "Thermal Model: identification impossible (%s), keeping %s parameters",
+                outcome.message,
+                self.runtime.params_source,
+            )
+
+        # Not async_request_refresh: that one is debounced by ~10 s, and the new
+        # parameters must reach the entities as soon as they are known.
+        await self.async_refresh()
 
     @callback
     def _handle_indoor_change(self, _event: Event[Any]) -> None:

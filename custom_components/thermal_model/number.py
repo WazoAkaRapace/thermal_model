@@ -207,7 +207,11 @@ class TunableNumber(ThermalModelEntity, NumberEntity, RestoreEntity):
         self._attr_device_class = device_class
         self._attr_mode = mode
         self._default = default
-        self._attr_native_value = runtime.tunables.get(key, default)
+
+    @property
+    def native_value(self) -> float:
+        """Always read the live value: identification writes into the same dict."""
+        return float(self.runtime.tunables.get(self.key, self._default))
 
     async def async_added_to_hass(self) -> None:
         """Restore the last value, and register ourselves as the truth."""
@@ -215,16 +219,19 @@ class TunableNumber(ThermalModelEntity, NumberEntity, RestoreEntity):
         last = await self.async_get_last_state()
         if last is not None and last.state not in ("unknown", "unavailable", ""):
             try:
-                self._attr_native_value = float(last.state)
+                # Do not overwrite an identified value with a stale restored state.
+                if self.runtime.params_source != "identified" or self.key not in (
+                    KEY_A,
+                    KEY_C_S,
+                    KEY_D,
+                    KEY_K,
+                ):
+                    self.runtime.tunables[self.key] = float(last.state)
             except (TypeError, ValueError):
                 _LOGGER.debug("Thermal Model: could not restore %s from %r", self.key, last.state)
-        self.runtime.tunables[self.key] = float(self._attr_native_value)  # type: ignore[arg-type]
-        if self.key in (KEY_A, KEY_C_S, KEY_D, KEY_K) and last is not None:
-            self.runtime.params_source = "manual"
 
     async def async_set_native_value(self, value: float) -> None:
         """Store, publish and recompute at once."""
-        self._attr_native_value = value
         self.runtime.tunables[self.key] = float(value)
         if self.key in (KEY_A, KEY_C_S, KEY_D, KEY_K):
             self.runtime.params_source = "manual"
@@ -243,8 +250,16 @@ class TunableNumber(ThermalModelEntity, NumberEntity, RestoreEntity):
             KEY_CAPACITY: "Power delivered by the heating when on, kW",
             KEY_HORIZON: "How many hours ahead the scenarios are simulated",
         }
+        identification = self.runtime.identification
         return {
             "explanation": explanations.get(self.key, ""),
             "params_source": self.runtime.params_source,
             "default": self._default,
+            # Why this value: on the number itself, where the user looks when the
+            # model says something surprising.
+            "identification": (
+                identification.as_attributes()
+                if identification is not None
+                else {"identifiability": "not_run"}
+            ),
         }

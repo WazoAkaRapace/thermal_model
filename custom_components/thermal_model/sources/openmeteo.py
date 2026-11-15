@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 from ..const import WEATHER_API_URL, WEATHER_TIMEOUT
 from ..core.forecast import WeatherStep
 
-__all__ = ["WeatherError", "fetch_weather"]
+__all__ = ["WeatherError", "fetch_past_weather", "fetch_weather"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,4 +105,61 @@ async def fetch_weather(
         steps[-1].time + timedelta(hours=1),
         model,
     )
+    return steps
+
+
+async def fetch_past_weather(
+    session: aiohttp.ClientSession,
+    *,
+    latitude: float,
+    longitude: float,
+    days: int,
+) -> list[WeatherStep]:
+    """Past hourly weather (temperature and irradiance) for the identification.
+
+    Open-Meteo serves ``past_days`` for free (up to 92), which is the simplest way to
+    get measured-weather inputs for a recorder window without asking the user for an
+    irradiance sensor. The ERA5 archive lags by days, hence the forecast endpoint
+    rather than the archive one.
+    """
+    past_days = max(1, min(92, days))
+    params = {
+        "latitude": f"{latitude:.4f}",
+        "longitude": f"{longitude:.4f}",
+        "hourly": "temperature_2m,shortwave_radiation",
+        "past_days": str(past_days),
+        "forecast_days": "1",
+        "timezone": "UTC",
+    }
+    try:
+        async with session.get(
+            WEATHER_API_URL,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=WEATHER_TIMEOUT),
+        ) as response:
+            if response.status != 200:
+                raise WeatherError(f"Open-Meteo returned HTTP {response.status}")
+            payload = await response.json()
+    except TimeoutError as err:
+        raise WeatherError("Open-Meteo timed out") from err
+    except aiohttp.ClientError as err:
+        raise WeatherError(f"Open-Meteo unreachable: {err}") from err
+
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time") or []
+    temperatures = hourly.get("temperature_2m") or []
+    radiation = hourly.get("shortwave_radiation") or []
+    steps: list[WeatherStep] = []
+    for index, stamp in enumerate(times):
+        if index >= len(temperatures) or temperatures[index] is None:
+            continue
+        steps.append(
+            WeatherStep(
+                time=_parse_hour(stamp),
+                text=float(temperatures[index]),
+                solar=float(radiation[index] or 0.0) if index < len(radiation) else 0.0,
+            )
+        )
+    if not steps:
+        raise WeatherError("Open-Meteo returned no past hour")
     return steps

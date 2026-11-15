@@ -9,7 +9,7 @@ DOMAIN: Final = "Thermal Model"
 DOMAIN_KEY: Final = "thermal_model"
 
 # Platforms forwarded once runtime data exists (grows with the milestones).
-PLATFORMS: Final[list[str]] = ["sensor", "number"]
+PLATFORMS: Final[list[str]] = ["sensor", "number", "button"]
 
 # --------------------------------------------------------------------------
 # Configuration keys

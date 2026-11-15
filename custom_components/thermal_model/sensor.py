@@ -184,6 +184,11 @@ class ScenarioForecastSensor(ThermalModelEntity, SensorEntity):
             "duration_hours": len(run.values) - 1,
             "params_digest": run.params_digest,
             "params_source": bundle.params_source,
+            "identification": (
+                self.runtime.identification.as_attributes()
+                if self.runtime.identification is not None
+                else {"identifiability": "not_run"}
+            ),
             "indoor_temperature_now": bundle.indoor_temperature,
             "outdoor_temperature_now": bundle.outdoor_temperature,
             "minimum": round(run.minimum, 2),

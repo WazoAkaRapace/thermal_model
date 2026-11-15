@@ -116,9 +116,26 @@ def _smooth(values: Sequence[float | None], half_window: int) -> list[float | No
     return smoothed
 
 
+def _heating_threshold(heating_kw: Sequence[float]) -> float:
+    """Power above which the heating is actually delivering, in kW.
+
+    A heat pump draws standby watts around the clock. Treating any non-zero power as
+    heating marks every step busy, so the house never free-floats and nothing can be
+    identified from a meter — measured on a real installation whose meter never reads
+    exactly zero. Relative to the observed peak, with an absolute floor for a small
+    boiler.
+    """
+    observed = sorted(power for power in heating_kw if power > 0)
+    if not observed:
+        return 0.15
+    peak = observed[min(len(observed) - 1, int(0.95 * (len(observed) - 1)))]
+    return max(0.15, 0.10 * peak)
+
+
 def _heating_and_grace(heating_kw: Sequence[float], grace_steps: int) -> list[bool]:
     """Mark the heating steps and the emitter's post-heating restitution window."""
-    busy = [power > 0 for power in heating_kw]
+    threshold = _heating_threshold(heating_kw)
+    busy = [power > threshold for power in heating_kw]
     marked = list(busy)
     for index, is_heating in enumerate(busy):
         if is_heating:

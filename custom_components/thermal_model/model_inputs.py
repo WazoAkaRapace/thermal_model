@@ -1,0 +1,374 @@
+"""Build the identification inputs from long-term statistics.
+
+Home Assistant keeps raw states for ~10 days but hourly statistics forever, and the
+model needs weeks. So the inputs come from statistics, and the code has to answer
+three questions on its own, because the user should not have to:
+
+1. **Which indoor temperature?** The bound sensor when its statistics are long
+   enough; otherwise the mean of the indoor thermometers the recorder already knows
+   about. The selection is statistical (a room thermometer sits in a narrow band
+   around the house temperature) plus a short blocklist of things that are *not* a
+   room: a device's own hardware temperature, our own forecasts, anything named like
+   a projection.
+2. **Which heating power?** An explicitly configured sensor wins. Otherwise the
+   candidates are tried in the identification itself and the one that fits the
+   measured temperature best — with ``k`` actually identified — is kept. That is
+   model selection, not name guessing, which matters because a house has a dozen
+   power meters and only one of them is the heating.
+3. **Which solar input?** Open-Meteo's past irradiance, unless the user bound a
+   sensor.
+
+Every choice is published in the outcome, so a surprising parameter can be traced
+back to the series it came from.
+"""
+
+from __future__ import annotations
+
+import logging
+import statistics
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .core.identify import IdentificationError, IdentificationSettings, identify
+from .sources import WeatherError, fetch_past_weather
+from .sources.statistics import StatisticPoint, async_read_statistics
+
+__all__ = ["ModelInputs", "build_inputs", "indoor_candidates", "power_candidates"]
+
+_LOGGER = logging.getLogger(__name__)
+
+# Not a room: device hardware temperatures, our own forecasts and the projections
+# other integrations publish. Token match on the statistic id, which is derived from
+# the entity id and therefore stable.
+_NOT_A_ROOM = (
+    "device_temperature",
+    "prevision",
+    "forecast",
+    "tempo",
+    "optimizer",
+    "target",
+    "consigne",
+    "setpoint",
+    "dewpoint",
+    "rosee",
+)
+
+MIN_INDOOR_DAYS = 5
+MAX_INDOOR_SENSORS = 16
+MAX_POWER_CANDIDATES = 6
+# A room temperature does not swing by more than a couple of degrees over a month,
+# and it sits inside this band. A door contact's hardware sensor is at 27 °C in a
+# 20 °C house; the outdoor probe is below zero. This filter is what removes them.
+ROOM_BAND = (10.0, 30.0)
+ROOM_MAX_SPREAD = 2.5
+
+
+@dataclass
+class ModelInputs:
+    """The four series the identifier consumes, plus where they came from."""
+
+    times: list[datetime] = field(default_factory=list)
+    tin: list[float | None] = field(default_factory=list)
+    tout: list[float] = field(default_factory=list)
+    solar: list[float] = field(default_factory=list)
+    heating_kw: list[float] = field(default_factory=list)
+    indoor_sources: list[str] = field(default_factory=list)
+    heating_power_sensor: str | None = None
+    solar_source: str = "open_meteo_past"
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def blockers(self) -> list[str]:
+        """Why the inputs cannot be used at all."""
+        return list(self.reasons)
+
+
+def _points(series: dict[str, list[StatisticPoint]]) -> dict[str, dict[datetime, float]]:
+    return {
+        statistic_id: {point.moment: point.value for point in points}
+        for statistic_id, points in series.items()
+    }
+
+
+def indoor_candidates(values: dict[str, dict[datetime, float]], exclude: set[str]) -> list[str]:
+    """Indoor thermometers among the given statistic series.
+
+    Statistical, not nominal: a room temperature stays in a narrow band over a month.
+    """
+    selected: list[tuple[float, str]] = []
+    for statistic_id, points in values.items():
+        if statistic_id in exclude:
+            continue
+        lowered = statistic_id.lower()
+        if any(token in lowered for token in _NOT_A_ROOM):
+            continue
+        readings = list(points.values())
+        if len(readings) < 24 * MIN_INDOOR_DAYS:
+            continue
+        mean = statistics.fmean(readings)
+        spread = statistics.pstdev(readings)
+        if not (ROOM_BAND[0] <= mean <= ROOM_BAND[1]):
+            continue
+        if spread > ROOM_MAX_SPREAD:
+            continue
+        selected.append((spread, statistic_id))
+    # the most stable first: a room follows the house, a device follows its own heat
+    selected.sort()
+    return [statistic_id for _spread, statistic_id in selected[:MAX_INDOOR_SENSORS]]
+
+
+def power_candidates(
+    values: dict[str, dict[datetime, float]],
+    exclude: set[str],
+    unit_of: dict[str, str | None] | None = None,
+) -> list[str]:
+    """Power meters worth trying as the heating input, most variable first.
+
+    Values are normalised to kW before the plausibility filter, because the recorder
+    stores what the sensor reported: a 2400 W meter is a 2.4 kW house load, not a
+    2400 kW one.
+    """
+    unit_of = unit_of or {}
+    scored: list[tuple[float, str]] = []
+    for statistic_id, points in values.items():
+        if statistic_id in exclude:
+            continue
+        readings = list(_kw(points, unit_of.get(statistic_id)).values())
+        if len(readings) < 24 * 3:
+            continue
+        peak = max(readings)
+        if peak <= 0.2 or peak > 20.0:  # kW: below is noise, above is not a house load
+            continue
+        scored.append((statistics.pvariance(readings), statistic_id))
+    scored.sort(reverse=True)
+    return [statistic_id for _variance, statistic_id in scored[:MAX_POWER_CANDIDATES]]
+
+
+def _mean_series(series: dict[str, dict[datetime, float]]) -> tuple[list[datetime], list[float]]:
+    """Hours present in every series, with the mean across them."""
+    if not series:
+        return [], []
+    common = set.intersection(*[set(points) for points in series.values()])
+    hours = sorted(common)
+    return hours, [
+        statistics.fmean([points[hour] for points in series.values() if hour in points])
+        for hour in hours
+    ]
+
+
+def _kw(values: dict[datetime, float], unit: str | None) -> dict[datetime, float]:
+    """Normalise a power series to kW."""
+    if unit and unit.strip().lower() in ("w", "watt", "watts"):
+        return {moment: value / 1000.0 for moment, value in values.items()}
+    return dict(values)
+
+
+async def _solar_series(
+    hass: HomeAssistant,
+    hours: list[datetime],
+    days: int,
+    irradiance_sensor: str | None,
+    latitude: float,
+    longitude: float,
+) -> tuple[list[float], str, str | None]:
+    """Hourly irradiance for the given hours."""
+    if irradiance_sensor:
+        series = await async_read_statistics(hass, [irradiance_sensor], days)
+        points = _points(series).get(irradiance_sensor) or {}
+        if points:
+            return (
+                [points.get(hour, 0.0) for hour in hours],
+                "sensor",
+                None,
+            )
+    try:
+        past = await fetch_past_weather(
+            async_get_clientsession(hass),
+            latitude=latitude,
+            longitude=longitude,
+            days=days,
+        )
+    except WeatherError as err:
+        return [0.0] * len(hours), "unavailable", str(err)
+    by_hour = {step.time: step.solar for step in past}
+    return (
+        [by_hour.get(hour.replace(minute=0, second=0, microsecond=0), 0.0) for hour in hours],
+        "open_meteo_past",
+        None,
+    )
+
+
+async def build_inputs(
+    hass: HomeAssistant,
+    *,
+    indoor_sensor: str,
+    outdoor_sensor: str,
+    heating_entity: str,
+    days: int,
+    power_sensor: str | None = None,
+    irradiance_sensor: str | None = None,
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    settings: IdentificationSettings | None = None,
+) -> tuple[ModelInputs, Any]:
+    """Assemble the series and pick the best heating-power candidate.
+
+    Returns the inputs and the identification result when one was fitted for the
+    winning power candidate (the caller re-runs it to keep this function honest about
+    what it returned).
+    """
+    ident_settings = settings or IdentificationSettings(dt_hours=1.0, window_hours=1)
+    inputs = ModelInputs()
+
+    wanted = {indoor_sensor, outdoor_sensor}
+    power_options: list[str] = []
+    if power_sensor:
+        power_options = [power_sensor]
+        wanted.add(power_sensor)
+    if irradiance_sensor:
+        wanted.add(irradiance_sensor)
+
+    # Phase 1: the bound sensors and the power candidates, in one read.
+    probe_ids = set(wanted)
+    first_pass = await async_read_statistics(hass, sorted(probe_ids), days)
+    first_points = _points(first_pass)
+    outdoor_points = first_points.get(outdoor_sensor) or {}
+    if not outdoor_points:
+        inputs.reasons.append(f"aucune statistique horaire pour {outdoor_sensor}")
+        return inputs, None
+
+    indoor_points = first_points.get(indoor_sensor) or {}
+    indoor_sources: list[str] = []
+    indoor_series: dict[str, dict[datetime, float]] = {}
+    if len(indoor_points) >= 24 * MIN_INDOOR_DAYS:
+        indoor_series[indoor_sensor] = indoor_points
+        indoor_sources = [indoor_sensor]
+    else:
+        # The bound sensor is too young (a freshly created mean helper, typically):
+        # use the thermometers the recorder already knows.
+        all_ids = sorted(
+            {
+                state.entity_id
+                for state in hass.states.async_all("sensor")
+                if state.attributes.get("device_class") == "temperature"
+            }
+            - wanted
+        )
+        discovered = await async_read_statistics(hass, all_ids, days)
+        candidates = indoor_candidates(_points(discovered), exclude=wanted)
+        indoor_series = {
+            candidate: _points(discovered)[candidate]
+            for candidate in candidates
+            if candidate in discovered
+        }
+        indoor_sources = list(indoor_series)
+        if not indoor_series:
+            inputs.reasons.append(
+                "le capteur intérieur n'a pas d'historique et aucun thermomètre "
+                "exploitable n'a été trouvé (minimum 5 jours de statistiques horaires)"
+            )
+            return inputs, None
+        if indoor_points:
+            inputs.reasons.append(
+                f"le capteur intérieur {indoor_sensor} n'a que "
+                f"{len(indoor_points) // 24} jour(s) d'historique : moyenne de "
+                f"{len(indoor_series)} thermomètre(s) à la place"
+            )
+
+    hours, tin = _mean_series(indoor_series)
+    hours = [hour for hour in hours if hour in outdoor_points]
+    if len(hours) < 24 * MIN_INDOOR_DAYS:
+        inputs.reasons.append(
+            f"seulement {len(hours)} heures communes entre l'intérieur et l'extérieur"
+        )
+        return inputs, None
+
+    index = {hour: position for position, hour in enumerate(hours)}
+    tin = [tin[index[hour]] for hour in hours]
+    tout = [outdoor_points[hour] for hour in hours]
+
+    solar, solar_source, solar_error = await _solar_series(
+        hass,
+        hours,
+        days,
+        irradiance_sensor,
+        latitude,
+        longitude,
+    )
+    if solar_error:
+        inputs.reasons.append(f"irradiance indisponible : {solar_error}")
+
+    # Publish what is already known before the power phase: a refusal must still say
+    # which indoor sources and which window it refused on.
+    inputs.times = hours
+    inputs.tin = tin
+    inputs.tout = tout
+    inputs.solar = solar
+    inputs.indoor_sources = indoor_sources
+    inputs.solar_source = solar_source
+
+    if not power_options:
+        every_power = sorted(
+            {
+                state.entity_id
+                for state in hass.states.async_all("sensor")
+                if state.attributes.get("device_class") == "power"
+            }
+            - wanted
+        )
+        discovered_power = await async_read_statistics(hass, every_power, days)
+        units = {
+            entity_id: (
+                hass.states.get(entity_id).attributes.get("unit_of_measurement")
+                if hass.states.get(entity_id) is not None
+                else None
+            )
+            for entity_id in every_power
+        }
+        power_options = power_candidates(_points(discovered_power), exclude=wanted, unit_of=units)
+
+    # Phase 2: let the identifier choose the heating input. A house has a dozen power
+    # meters; the one that explains the measured temperature is the heating.
+    best: tuple[float, str, Any, list[float], Any] | None = None
+    failures: list[str] = []
+    for candidate in power_options:
+        series = await async_read_statistics(hass, [candidate], days)
+        points = _points(series).get(candidate) or {}
+        if len(points) < len(hours) * 0.6:
+            failures.append(f"{candidate}: historique trop court")
+            continue
+        state = hass.states.get(candidate)
+        unit = state.attributes.get("unit_of_measurement") if state is not None else None
+        normalised = _kw(points, unit)
+        values = [normalised.get(hour, 0.0) for hour in hours]
+        try:
+            result = identify(hours, tin, tout, solar, values, settings=ident_settings)
+        except IdentificationError as err:
+            failures.append(f"{candidate}: {err}")
+            continue
+        score = result.rmse_observed if result.rmse_observed is not None else float("inf")
+        if result.params is None or result.params.k is None:
+            failures.append(f"{candidate}: k non identifiable")
+            continue
+        if best is None or score < best[0]:
+            best = (score, candidate, result, values, result)
+
+    if best is None:
+        if power_options:
+            inputs.reasons.append(
+                "aucune puissance de chauffe exploitable parmi : " + ", ".join(power_options[:4])
+            )
+            inputs.reasons.extend(failures[:3])
+        else:
+            inputs.reasons.append("aucun capteur de puissance de chauffe trouvé")
+        _LOGGER.debug("Thermal Model: power candidates rejected: %s", failures[:6])
+        return inputs, None
+
+    _score, chosen, result, values, _ = best
+    inputs.heating_kw = values
+    inputs.heating_power_sensor = chosen
+    return inputs, result
