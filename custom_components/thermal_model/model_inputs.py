@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import logging
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .core.daily_k import DailyKResult, identify_k_from_daily_energy
 from .core.identify import IdentificationError, IdentificationSettings, identify
 from .sources import WeatherError, fetch_past_weather
 from .sources.statistics import StatisticPoint, async_read_statistics
@@ -83,6 +85,8 @@ class ModelInputs:
     heating_power_sensor: str | None = None
     solar_source: str = "open_meteo_past"
     power_options: list[str] = field(default_factory=list)
+    energy_sensor: str | None = None
+    daily_k: DailyKResult | None = None
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -413,6 +417,7 @@ async def build_inputs(
     # Phase 2: let the identifier choose the heating input. A house has a dozen power
     # meters; the one that explains the measured temperature is the heating.
     best: tuple[float, str, Any, list[float], Any] | None = None
+    best_without_k: tuple[float, str, Any, list[float]] | None = None
     failures: list[str] = []
     # One read for every candidate: a query per candidate would be dozens of database
     # round trips for a job that runs daily.
@@ -433,11 +438,41 @@ async def build_inputs(
             failures.append(f"{candidate}: {err}")
             continue
         score = result.rmse_observed if result.rmse_observed is not None else float("inf")
-        if result.params is None or result.params.k is None:
-            failures.append(f"{candidate}: k non identifiable")
+        if result.params is None:
+            failures.append(f"{candidate}: aucun paramètre")
+            continue
+        if result.params.k is None:
+            # The house coefficients can still be good — a and c_s are what the passive
+            # windows give. Daily energy finishes k without needing free-float nights.
+            failures.append(f"{candidate}: k non identifiable à l'heure")
+            if best_without_k is None or score < best_without_k[0]:
+                best_without_k = (score, candidate, result, values)
             continue
         if best is None or score < best[0]:
             best = (score, candidate, result, values, result)
+
+    if best is None and best_without_k is not None:
+        _score, candidate, result, values = best_without_k
+        finished, energy_sensor, daily = await _finish_k_with_daily_energy(
+            hass,
+            candidate=candidate,
+            hours=hours,
+            tin=tin,
+            tout=tout,
+            solar=solar,
+            days=days,
+            params=result.params,
+        )
+        inputs.energy_sensor = energy_sensor
+        inputs.daily_k = daily
+        if finished is not None:
+            inputs.heating_kw = values
+            inputs.heating_power_sensor = candidate
+            return inputs, finished
+        if daily is not None and daily.message:
+            inputs.reasons.append(daily.message)
+        inputs.reasons.extend(failures[:3])
+        return inputs, None
 
     if best is None:
         if power_options:
@@ -453,4 +488,96 @@ async def build_inputs(
     _score, chosen, result, values, _ = best
     inputs.heating_kw = values
     inputs.heating_power_sensor = chosen
+
+    # A kWh counter on the same device is a measurement, and the daily balance is far
+    # more robust than an hourly regression on a modulating heat pump: on the real
+    # installation the hourly fit returned k = 5.96 K/kWh (a 2.4 kW pump raising the
+    # whole house by 12 K/h: impossible) while the daily balance returned
+    # 0.251 ± 0.025 over 20 days and 113 kWh. Prefer the measurement.
+    finished, energy_sensor, daily = await _finish_k_with_daily_energy(
+        hass,
+        candidate=chosen,
+        hours=hours,
+        tin=tin,
+        tout=tout,
+        solar=solar,
+        days=days,
+        params=result.params,
+    )
+    inputs.energy_sensor = energy_sensor
+    inputs.daily_k = daily
+    if finished is not None:
+        result = replace(result, params=finished) if hasattr(result, "params") else result
+        return inputs, result
     return inputs, result
+
+
+def _energy_sensor_for(hass: HomeAssistant, power_sensor: str) -> str | None:
+    """The energy counter of the same device as the power meter.
+
+    A heat pump almost never exposes its power as an entity, but its meter usually
+    exposes energy in kWh on the same device — and kWh per day is exactly what the
+    daily balance needs.
+    """
+    registry = er.async_get(hass)
+    meter = registry.async_get(power_sensor)
+    device_id = getattr(meter, "device_id", None)
+    candidates: list[str] = []
+    for entry in registry.entities.values():
+        if entry.device_id != device_id or entry.domain != "sensor":
+            continue
+        state = hass.states.get(entry.entity_id)
+        if state is None:
+            continue
+        unit = str(state.attributes.get("unit_of_measurement") or "")
+        if state.attributes.get("device_class") == "energy" or unit in ("kWh", "Wh"):
+            candidates.append(entry.entity_id)
+    if not candidates:
+        return None
+    # prefer kWh over Wh so the numbers stay readable, then alphabetical for determinism
+    candidates.sort(
+        key=lambda entity_id: (
+            str(hass.states[entity_id].attributes.get("unit_of_measurement")) == "Wh",
+            entity_id,
+        )
+    )
+    return candidates[0]
+
+
+async def _finish_k_with_daily_energy(
+    hass: HomeAssistant,
+    *,
+    candidate: str,
+    hours: list[datetime],
+    tin: list[float],
+    tout: list[float],
+    solar: list[float],
+    days: int,
+    params: Any,
+) -> tuple[Any, str | None, DailyKResult | None]:
+    """Replace the missing ``k`` with the daily energy balance."""
+    energy_sensor = _energy_sensor_for(hass, candidate)
+    if energy_sensor is None:
+        return None, None, None
+
+    series = await async_read_statistics(hass, [energy_sensor], days)
+    points = _points(series).get(energy_sensor) or {}
+    if not points:
+        return None, energy_sensor, None
+    state = hass.states.get(energy_sensor)
+    unit = str(state.attributes.get("unit_of_measurement") or "") if state is not None else ""
+    scale = 0.001 if unit == "Wh" else 1.0
+    energy = [points.get(hour, 0.0) * scale for hour in hours]
+
+    daily = identify_k_from_daily_energy(hours, tin, tout, solar, energy, params)
+    if not daily.ok or daily.k is None:
+        return None, energy_sensor, daily
+    finished = replace(params, k=daily.k)
+    _LOGGER.info(
+        "Thermal Model: k = %.4f ± %.4f K/kWh from %s days of %s",
+        daily.k,
+        daily.stderr or 0.0,
+        daily.days,
+        energy_sensor,
+    )
+    return finished, energy_sensor, daily

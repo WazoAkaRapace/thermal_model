@@ -55,6 +55,10 @@ class IdentificationOutcome:
     identified_at: datetime | None = None
     indoor_sources: tuple[str, ...] = ()
     heating_power_sensor: str | None = None
+    energy_sensor: str | None = None
+    k_stderr: float | None = None
+    k_days: int = 0
+    k_energy_kwh: float = 0.0
     solar_source: str = "open_meteo_past"
     notes: tuple[str, ...] = ()
 
@@ -81,6 +85,10 @@ class IdentificationOutcome:
             "k_source": self.k_source,
             "indoor_sources": list(self.indoor_sources),
             "heating_power_sensor": self.heating_power_sensor,
+            "energy_sensor": self.energy_sensor,
+            "k_standard_error": (None if self.k_stderr is None else round(self.k_stderr, 4)),
+            "k_days": self.k_days,
+            "k_energy_kwh": round(self.k_energy_kwh, 2),
             "solar_source": self.solar_source,
             "notes": list(self.notes),
             "identification_error": self.message,
@@ -151,6 +159,8 @@ async def async_identify_model(
             identified_at=datetime.now(UTC),
         )
 
+    daily = inputs.daily_k
+    k_source = "daily_energy" if (daily is not None and daily.ok) else "hourly"
     identified_days = max(1, round(len(inputs.times) / 24))
     coverage = (
         sum(1 for value in inputs.tin if value is not None) / len(inputs.tin) if inputs.tin else 0.0
@@ -171,7 +181,11 @@ async def async_identify_model(
         coverage=coverage,
         samples=len(inputs.times),
         days=identified_days,
-        k_source="statistics",
+        k_source=k_source,
+        energy_sensor=inputs.energy_sensor,
+        k_stderr=daily.stderr if daily is not None else None,
+        k_days=daily.days if daily is not None else 0,
+        k_energy_kwh=daily.total_kwh if daily is not None else 0.0,
         identified_at=datetime.now(UTC),
         indoor_sources=tuple(inputs.indoor_sources),
         heating_power_sensor=inputs.heating_power_sensor,
