@@ -12,11 +12,13 @@
       },
       "sources": {
         "title": "Sources",
-        "description": "These three entities are enough to identify the thermal model of the house.",
+        "description": "The three entities are enough to identify the thermal model. The two optional measurements make it better: a heating power meter measures k instead of estimating it, and an irradiance sensor replaces the weather archive for the solar gain.",
         "data": {
           "heating_entity": "Heating entity",
           "indoor_sensor": "Indoor temperature sensor",
-          "outdoor_sensor": "Outdoor temperature sensor"
+          "outdoor_sensor": "Outdoor temperature sensor",
+          "heating_power_sensor": "Heating power meter (optional)",
+          "irradiance_sensor": "Irradiance sensor (optional)"
         }
       },
       "window": {
@@ -63,7 +65,9 @@
           "dt_storage_minutes": "Storage time step",
           "smooth_hours": "Smoothing window",
           "tau_grace_minutes": "Post-heating grace period",
-          "retention_days": "Data retention"
+          "retention_days": "Data retention",
+          "heating_power_sensor": "Heating power meter (optional)",
+          "irradiance_sensor": "Irradiance sensor (optional)"
         }
       }
     }

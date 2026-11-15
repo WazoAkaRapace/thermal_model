@@ -15,8 +15,10 @@ from .const import (
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
     CONF_HEATING_ENTITY,
+    CONF_HEATING_POWER_SENSOR,
     CONF_HISTORY_DAYS,
     CONF_INDOOR_SENSOR,
+    CONF_IRRADIANCE_SENSOR,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_NAME,
@@ -72,6 +74,10 @@ def _validate_sources(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[s
     if domain not in HEATING_DOMAINS:
         errors[CONF_HEATING_ENTITY] = "unsupported_heating_entity"
 
+    for key in (CONF_HEATING_POWER_SENSOR, CONF_IRRADIANCE_SENSOR):
+        provided = user_input.get(key)
+        if provided and hass.states.get(str(provided)) is None:
+            errors[key] = "unknown_entity"
     for key in (CONF_INDOOR_SENSOR, CONF_OUTDOOR_SENSOR):
         entity_id = str(user_input.get(key, ""))
         verdict = _looks_like_temperature(hass, entity_id)
@@ -166,21 +172,40 @@ def _window_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
+# Two inputs the identifier needs and cannot guess reliably in a house full of
+# sensors: which meter is the heating, and how much sun actually reaches the house.
+# Both are optional — without them the integration detects a meter and takes past
+# irradiance from Open-Meteo — but a user who has the sensor must be able to say so,
+# because no heuristic beats "this one".
+_MEASUREMENT_FIELDS: dict[str, Any] = {
+    CONF_HEATING_POWER_SENSOR: selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class=["power", "energy"])
+    ),
+    CONF_IRRADIANCE_SENSOR: selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class=["irradiance", "illuminance"])
+    ),
+}
+
+
 def _sources_schema(defaults: dict[str, Any]) -> vol.Schema:
-    """The three mandatory entities."""
-    return vol.Schema(
-        {
-            vol.Required(
-                CONF_HEATING_ENTITY, default=defaults.get(CONF_HEATING_ENTITY, vol.UNDEFINED)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain=list(HEATING_DOMAINS))),
-            vol.Required(
-                CONF_INDOOR_SENSOR, default=defaults.get(CONF_INDOOR_SENSOR, vol.UNDEFINED)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-            vol.Required(
-                CONF_OUTDOOR_SENSOR, default=defaults.get(CONF_OUTDOOR_SENSOR, vol.UNDEFINED)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-        }
-    )
+    """The three mandatory entities, plus the two measurements when the user has them."""
+    fields: dict[Any, Any] = {
+        vol.Required(
+            CONF_HEATING_ENTITY, default=defaults.get(CONF_HEATING_ENTITY, vol.UNDEFINED)
+        ): selector.EntitySelector(selector.EntitySelectorConfig(domain=list(HEATING_DOMAINS))),
+        vol.Required(
+            CONF_INDOOR_SENSOR, default=defaults.get(CONF_INDOOR_SENSOR, vol.UNDEFINED)
+        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+        vol.Required(
+            CONF_OUTDOOR_SENSOR, default=defaults.get(CONF_OUTDOOR_SENSOR, vol.UNDEFINED)
+        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+    }
+    for key, entity_selector in _MEASUREMENT_FIELDS.items():
+        current = defaults.get(key)
+        fields[vol.Optional(key, description={"suggested_value": current} if current else None)] = (
+            entity_selector
+        )
+    return vol.Schema(fields)
 
 
 class ThermalModelConfigFlow(ConfigFlow, domain=DOMAIN_KEY):
@@ -306,4 +331,14 @@ class ThermalModelOptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
 
         defaults = {**self.config_entry.data, **self.config_entry.options}
-        return self.async_show_form(step_id="init", data_schema=_window_schema(defaults))
+        base = _window_schema(defaults).schema
+        fields: dict[Any, Any] = dict(base)
+        for key, entity_selector in _MEASUREMENT_FIELDS.items():
+            current = defaults.get(key)
+            fields[
+                vol.Optional(key, description={"suggested_value": current} if current else None)
+            ] = entity_selector
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(fields),
+        )

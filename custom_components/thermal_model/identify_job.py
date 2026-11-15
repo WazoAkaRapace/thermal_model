@@ -114,8 +114,13 @@ async def async_identify_model(
         options.get(CONF_LONGITUDE, entry_data.get(CONF_LONGITUDE, hass.config.longitude))
     )
 
-    # An explicit choice (the select entity or the entry option) wins over detection.
-    chosen_by_user = runtime.selected_power_sensor or options.get(CONF_HEATING_POWER_SENSOR)
+    # An explicit choice wins over detection: the select entity, then the entry
+    # option, then whatever the setup flow stored in the entry data.
+    chosen_by_user = (
+        runtime.selected_power_sensor
+        or options.get(CONF_HEATING_POWER_SENSOR)
+        or entry_data.get(CONF_HEATING_POWER_SENSOR)
+    )
 
     inputs, result = await build_inputs(
         hass,
@@ -124,7 +129,8 @@ async def async_identify_model(
         heating_entity=runtime.sources.heating_entity,
         days=days,
         power_sensor=chosen_by_user,
-        irradiance_sensor=options.get(CONF_IRRADIANCE_SENSOR),
+        irradiance_sensor=options.get(CONF_IRRADIANCE_SENSOR)
+        or entry_data.get(CONF_IRRADIANCE_SENSOR),
         latitude=latitude,
         longitude=longitude,
         settings=ident_settings,

@@ -13,8 +13,10 @@ from custom_components.thermal_model.const import (
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
     CONF_HEATING_ENTITY,
+    CONF_HEATING_POWER_SENSOR,
     CONF_HISTORY_DAYS,
     CONF_INDOOR_SENSOR,
+    CONF_IRRADIANCE_SENSOR,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_NAME,
@@ -240,3 +242,70 @@ async def test_reconfigure_remaps_sources(hass: HomeAssistant, temperature_entit
 
     assert result["type"] is FlowResultType.ABORT
     assert entry.data[CONF_OUTDOOR_SENSOR] == "sensor.new_outdoor"
+
+
+async def test_sources_step_offers_the_two_optional_measurements(
+    hass: HomeAssistant, temperature_entities: None
+) -> None:
+    """A user who has a heating meter and a solar sensor must be able to say so.
+
+    Without these fields the integration guesses both, and on a house with a dozen
+    power meters and an inverter the guess lands on the wrong meter.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN_KEY, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+
+    keys = [str(key) for key in result["data_schema"].schema]
+    assert CONF_HEATING_POWER_SENSOR in keys
+    assert CONF_IRRADIANCE_SENSOR in keys
+
+
+async def test_the_optional_measurements_are_stored(
+    hass: HomeAssistant, temperature_entities: None
+) -> None:
+    """They must reach the entry data: the identification reads them from there."""
+    hass.states.async_set(
+        "sensor.pac_power", "1200", {"device_class": "power", "unit_of_measurement": "W"}
+    )
+    hass.states.async_set(
+        "sensor.roof_irradiance",
+        "320",
+        {"device_class": "irradiance", "unit_of_measurement": "W/m²"},
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN_KEY, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            **SOURCES_INPUT,
+            CONF_HEATING_POWER_SENSOR: "sensor.pac_power",
+            CONF_IRRADIANCE_SENSOR: "sensor.roof_irradiance",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], WINDOW_INPUT)
+
+    entry = result["result"]
+    assert entry.data[CONF_HEATING_POWER_SENSOR] == "sensor.pac_power"
+    assert entry.data[CONF_IRRADIANCE_SENSOR] == "sensor.roof_irradiance"
+
+
+async def test_an_unknown_optional_measurement_is_rejected(
+    hass: HomeAssistant, temperature_entities: None
+) -> None:
+    """A typo in an optional field must not silently disable the input."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN_KEY, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {**SOURCES_INPUT, CONF_HEATING_POWER_SENSOR: "sensor.does_not_exist"},
+    )
+
+    assert result["errors"][CONF_HEATING_POWER_SENSOR] == "unknown_entity"
+    assert result["step_id"] == "sources"
