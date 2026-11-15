@@ -94,6 +94,70 @@ async def test_parameters_are_exposed_as_numbers(
         assert hass.states.get(entity_id) is not None, entity_id
 
 
+async def test_startup_with_the_indoor_sensor_not_ready_recovers_fast(
+    hass: HomeAssistant, temperature_entities: None, aioclient_mock: Any, freezer: Any
+) -> None:
+    """A restart often finds the indoor sensor still unknown: retry in minutes.
+
+    Seen on a real installation: the first cycle failed, every forecast entity went
+    unavailable, and nothing retried for the configured 30 minutes.
+    """
+    from datetime import timedelta
+
+    from tests.conftest import ENTRY_DATA, NOW, open_meteo_payload
+
+    from custom_components.thermal_model.coordinator import RETRY_INTERVAL
+
+    freezer.move_to(NOW)
+    aioclient_mock.get("https://api.open-meteo.com/v1/forecast", json=open_meteo_payload())
+
+    hass.states.async_set("climate.living_room", "heat", {"hvac_action": "heating"})
+    hass.states.async_set("sensor.indoor_temperature", "unknown")
+    hass.states.async_set("sensor.outdoor_temperature", "6.1")
+
+    entry = MockConfigEntry(domain="thermal_model", data=ENTRY_DATA, title="Home")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.update_interval == RETRY_INTERVAL
+    assert hass.states.get("sensor.home_forecast_free_float").state == "unavailable"
+
+    # The sensor comes back, as it does a few seconds after a restart.
+    hass.states.async_set("sensor.indoor_temperature", "20.4")
+    await hass.async_block_till_done()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.home_forecast_free_float")
+    assert state.state not in ("unavailable", "unknown")
+    assert coordinator.update_interval == timedelta(minutes=30)
+
+
+async def test_the_forecast_follows_the_indoor_sensor(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """A moving temperature must not be plotted against an old starting point."""
+    before = hass.states.get("sensor.home_forecast_free_float")
+    assert before is not None
+
+    hass.states.async_set(
+        "sensor.indoor_temperature",
+        "17.2",
+        {"device_class": "temperature", "unit_of_measurement": "°C"},
+    )
+    await hass.async_block_till_done()
+
+    coordinator = setup_entry.runtime_data.coordinator
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    after = hass.states.get("sensor.home_forecast_free_float")
+    # values[0] is the starting point of the trajectory: it must be the new reading
+    assert after.attributes["values"][0] == pytest.approx(17.2, abs=0.05)
+
+
 async def test_a_weather_outage_keeps_the_previous_runs(
     hass: HomeAssistant, setup_entry: MockConfigEntry, aioclient_mock: Any
 ) -> None:

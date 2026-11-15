@@ -15,13 +15,17 @@ hiccups.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import ModelSettings, SourceBinding, ThermalModelRuntimeData
@@ -54,6 +58,11 @@ KEY_K = "k"
 KEY_SETPOINT = "setpoint"
 KEY_CAPACITY = "capacity"
 KEY_HORIZON = "horizon"
+
+# A cycle that produced nothing (sensor not ready yet) must not wait 30 minutes,
+# and a moving temperature must not leave a stale trajectory on screen.
+RETRY_INTERVAL = timedelta(minutes=2)
+LIVE_REFRESH_COOLDOWN = timedelta(minutes=2)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,6 +105,48 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         self.runtime: ThermalModelRuntimeData = runtime
         self.database = database
         self._last_bundle: ForecastBundle | None = None
+        self._unsub_state: Callable[[], None] | None = None
+        self._debouncer = Debouncer(
+            self.hass,
+            _LOGGER,
+            cooldown=LIVE_REFRESH_COOLDOWN.total_seconds(),
+            immediate=False,
+            function=self._async_debounced_refresh,
+            background=True,
+        )
+
+    # -- lifecycle -------------------------------------------------------
+    def async_start(self) -> None:
+        """Follow the indoor sensor between scheduled cycles.
+
+        Two problems this solves, both seen on a real installation:
+
+        - at startup the indoor sensor is still `unknown` when the first refresh
+          runs, so the entry published nothing and simply waited 30 minutes;
+        - a house whose temperature moves should not show a trajectory computed
+          from a value hours old.
+        """
+        if self._unsub_state is not None:  # pragma: no cover - defensive
+            return
+        self._unsub_state = async_track_state_change_event(
+            self.hass, [self.sources.indoor_sensor], self._handle_indoor_change
+        )
+
+    async def async_shutdown(self) -> None:
+        """Stop following the sensor when the entry unloads."""
+        if self._unsub_state is not None:
+            self._unsub_state()
+            self._unsub_state = None
+        self._debouncer.async_cancel()
+        await super().async_shutdown()
+
+    @callback
+    def _handle_indoor_change(self, _event: Event[Any]) -> None:
+        """Refresh shortly after the measured temperature settles."""
+        self._debouncer.async_schedule_call()
+
+    async def _async_debounced_refresh(self) -> None:
+        await self.async_request_refresh()
 
     # -- helpers ---------------------------------------------------------
     @property
@@ -149,8 +200,12 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
     async def _async_update_data(self) -> ForecastBundle:
         indoor = self._state_float(self.sources.indoor_sensor)
         if indoor is None:
+            # The sensor is often still `unknown` seconds after a restart: retry
+            # soon instead of leaving every entity unavailable for half an hour.
+            self.update_interval = RETRY_INTERVAL
             raise UpdateFailed(f"{self.sources.indoor_sensor} has no usable temperature")
 
+        self.update_interval = timedelta(minutes=FORECAST_REFRESH_MINUTES)
         outdoor = self._state_float(self.sources.outdoor_sensor)
         latitude, longitude = self._coordinates()
         horizon = int(self._tunable(KEY_HORIZON))

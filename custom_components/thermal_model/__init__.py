@@ -201,6 +201,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # the entities instead of blocking setup.
     await coordinator.async_refresh()
 
+    # Follow the indoor sensor between cycles: after a restart it is often still
+    # unknown when the first refresh runs, and a moving temperature must not be
+    # plotted against a stale starting point.
+    coordinator.async_start()
+
     # The panel needs the entity ids to exist, so it is registered after the
     # platforms: an entity id is the registry's business, not a string we guess.
     from .panel import async_register_panel
