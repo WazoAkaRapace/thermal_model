@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Thermal Model",
+        "description": "Name this model and set the location used for weather forecasts and past irradiance.",
+        "data": {
+          "name": "Name",
+          "latitude": "Latitude",
+          "longitude": "Longitude"
+        }
+      },
+      "sources": {
+        "title": "Sources",
+        "description": "These three entities are enough to identify the thermal model of the house.",
+        "data": {
+          "heating_entity": "Heating entity",
+          "indoor_sensor": "Indoor temperature sensor",
+          "outdoor_sensor": "Outdoor temperature sensor"
+        }
+      },
+      "window": {
+        "title": "Identification window",
+        "description": "How much history to use and how the samples are stored locally.",
+        "data": {
+          "history_days": "History window",
+          "dt_minutes": "Identification time step",
+          "dt_storage_minutes": "Storage time step",
+          "smooth_hours": "Smoothing window",
+          "tau_grace_minutes": "Post-heating grace period",
+          "retention_days": "Data retention"
+        }
+      },
+      "reconfigure": {
+        "title": "Thermal Model sources",
+        "description": "Change the heating entity or the temperature sensors.",
+        "data": {
+          "heating_entity": "Heating entity",
+          "indoor_sensor": "Indoor temperature sensor",
+          "outdoor_sensor": "Outdoor temperature sensor"
+        }
+      }
+    },
+    "error": {
+      "unsupported_heating_entity": "Pick a climate, water heater, switch or input boolean entity.",
+      "entity_not_found": "This entity does not exist.",
+      "not_a_temperature_sensor": "This entity does not report a temperature (no temperature device class and no temperature unit).",
+      "same_entity": "The indoor and outdoor sensors must be different entities."
+    },
+    "abort": {
+      "already_configured": "This model is already configured.",
+      "reconfigure_successful": "The sources were updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Identification window",
+        "description": "How much history to use and how the samples are stored locally.",
+        "data": {
+          "history_days": "History window",
+          "dt_minutes": "Identification time step",
+          "dt_storage_minutes": "Storage time step",
+          "smooth_hours": "Smoothing window",
+          "tau_grace_minutes": "Post-heating grace period",
+          "retention_days": "Data retention"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Indoor temperature"
+      },
+      "outdoor_temperature": {
+        "name": "Outdoor temperature"
+      },
+      "heating_power": {
+        "name": "Heating power"
+      },
+      "irradiance": {
+        "name": "Irradiance"
+      }
+    }
+  }
+}

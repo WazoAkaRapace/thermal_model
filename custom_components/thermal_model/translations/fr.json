@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Modèle thermique",
+        "description": "Nommez ce modèle et indiquez le lieu utilisé pour les prévisions météo et l'irradiance passée.",
+        "data": {
+          "name": "Nom",
+          "latitude": "Latitude",
+          "longitude": "Longitude"
+        }
+      },
+      "sources": {
+        "title": "Sources",
+        "description": "Ces trois entités suffisent à identifier le modèle thermique de l'habitation.",
+        "data": {
+          "heating_entity": "Entité de chauffe",
+          "indoor_sensor": "Capteur de température intérieure",
+          "outdoor_sensor": "Capteur de température extérieure"
+        }
+      },
+      "window": {
+        "title": "Fenêtre d'identification",
+        "description": "Profondeur d'historique et stockage local des mesures.",
+        "data": {
+          "history_days": "Fenêtre d'historique",
+          "dt_minutes": "Pas de temps d'identification",
+          "dt_storage_minutes": "Pas de temps de stockage",
+          "smooth_hours": "Fenêtre de lissage",
+          "tau_grace_minutes": "Délai après arrêt de chauffe",
+          "retention_days": "Durée de conservation"
+        }
+      },
+      "reconfigure": {
+        "title": "Sources du modèle thermique",
+        "description": "Modifier l'entité de chauffe ou les capteurs de température.",
+        "data": {
+          "heating_entity": "Entité de chauffe",
+          "indoor_sensor": "Capteur de température intérieure",
+          "outdoor_sensor": "Capteur de température extérieure"
+        }
+      }
+    },
+    "error": {
+      "unsupported_heating_entity": "Choisissez une entité climate, water_heater, switch ou input_boolean.",
+      "entity_not_found": "Cette entité n'existe pas.",
+      "not_a_temperature_sensor": "Cette entité ne mesure pas une température (ni device_class temperature, ni unité de température).",
+      "same_entity": "Les capteurs intérieur et extérieur doivent être deux entités différentes."
+    },
+    "abort": {
+      "already_configured": "Ce modèle est déjà configuré.",
+      "reconfigure_successful": "Les sources ont été mises à jour."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fenêtre d'identification",
+        "description": "Profondeur d'historique et stockage local des mesures.",
+        "data": {
+          "history_days": "Fenêtre d'historique",
+          "dt_minutes": "Pas de temps d'identification",
+          "dt_storage_minutes": "Pas de temps de stockage",
+          "smooth_hours": "Fenêtre de lissage",
+          "tau_grace_minutes": "Délai après arrêt de chauffe",
+          "retention_days": "Durée de conservation"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Température intérieure"
+      },
+      "outdoor_temperature": {
+        "name": "Température extérieure"
+      },
+      "heating_power": {
+        "name": "Puissance de chauffe"
+      },
+      "irradiance": {
+        "name": "Irradiance"
+      }
+    }
+  }
+}

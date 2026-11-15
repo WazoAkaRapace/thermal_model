@@ -1,0 +1,7 @@
+# Test/runtime tooling for the Thermal Model integration.
+# The integration itself has ZERO runtime requirements (no numpy, no scipy):
+# this file is only about the development and CI environment.
+pytest>=8.0
+pytest-asyncio>=0.24
+pytest-homeassistant-custom-component>=0.13.200
+ruff>=0.7
