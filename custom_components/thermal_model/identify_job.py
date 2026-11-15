@@ -142,6 +142,7 @@ async def async_identify_model(
         latitude=latitude,
         longitude=longitude,
         settings=ident_settings,
+        runtime_tunables=runtime.tunables,
     )
 
     # Publish the candidates so the select entity can offer them.

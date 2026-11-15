@@ -297,6 +297,7 @@ async def build_inputs(
     latitude: float = 0.0,
     longitude: float = 0.0,
     settings: IdentificationSettings | None = None,
+    runtime_tunables: dict[str, float] | None = None,
 ) -> tuple[ModelInputs, Any]:
     """Assemble the series and pick the best heating-power candidate.
 
@@ -458,6 +459,19 @@ async def build_inputs(
             failures.append(f"{candidate}: {err}")
             continue
         score = result.rmse_observed if result.rmse_observed is not None else float("inf")
+        # The plausibility guard applies to what we guessed, never to what the user
+        # chose: an explicitly selected meter is a decision, not a candidate.
+        if result.params is not None and result.params.k is not None and power_sensor is None:
+            capacity = float(runtime_tunables.get("capacity", 2.0)) if runtime_tunables else 2.0
+            implied = result.params.k * capacity
+            if not 0.05 <= implied <= 3.0:
+                # k is the temperature rise at full power: a meter that implies 12 K/h
+                # or 0.01 K/h is not measuring the heating, however well it fits.
+                failures.append(
+                    f"{candidate}: gain implicite {implied:.2f} K/h hors plage "
+                    f"pour {capacity:.1f} kW"
+                )
+                continue
         if result.params is None:
             failures.append(f"{candidate}: aucun paramètre")
             continue
