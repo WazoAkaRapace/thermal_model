@@ -115,7 +115,7 @@ def statistics_reader(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[datetim
     data = _synthetic()
 
     async def fake_read_statistics(
-        hass: Any, statistic_ids: Any, days: int
+        hass: Any, statistic_ids: Any, days: int, *, prefer: str = "mean"
     ) -> dict[str, list[StatisticPoint]]:
         return {
             statistic_id: [

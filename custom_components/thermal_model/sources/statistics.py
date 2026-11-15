@@ -56,7 +56,11 @@ def _rows_to_points(rows: Sequence[dict[str, Any]], prefer: str) -> list[Statist
 
 
 def _read(
-    hass: HomeAssistant, statistic_ids: set[str], start: datetime, end: datetime
+    hass: HomeAssistant,
+    statistic_ids: set[str],
+    start: datetime,
+    end: datetime,
+    prefer: str = "mean",
 ) -> dict[str, list[StatisticPoint]]:
     """Read hourly statistics (sync: touches the recorder database)."""
     import homeassistant.components.recorder.statistics as recorder_statistics
@@ -71,7 +75,7 @@ def _read(
         {"mean", "change"},
     )
     return {
-        statistic_id: _rows_to_points(values, prefer="mean")
+        statistic_id: _rows_to_points(values, prefer=prefer)
         for statistic_id, values in (rows or {}).items()
     }
 

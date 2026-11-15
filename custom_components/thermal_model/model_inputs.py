@@ -513,7 +513,7 @@ async def build_inputs(
         # balance. The hourly fit cannot separate the wall loss from the heating when
         # the heating is never observed, the days can.
         energy_sensor = energy_options[0]
-        series = await async_read_statistics(hass, [energy_sensor], days)
+        series = await async_read_statistics(hass, [energy_sensor], days, prefer="change")
         points = _points(series).get(energy_sensor) or {}
         state = hass.states.get(energy_sensor)
         unit = str(state.attributes.get("unit_of_measurement") or "") if state else ""
@@ -622,7 +622,7 @@ async def _finish_k_with_daily_energy(
     if energy_sensor is None:
         return None, None, None
 
-    series = await async_read_statistics(hass, [energy_sensor], days)
+    series = await async_read_statistics(hass, [energy_sensor], days, prefer="change")
     points = _points(series).get(energy_sensor) or {}
     if not points:
         return None, energy_sensor, None
