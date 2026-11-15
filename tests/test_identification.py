@@ -15,7 +15,10 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant, State
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.thermal_model.const import DOMAIN_KEY
 from custom_components.thermal_model.model_inputs import (
@@ -318,6 +321,11 @@ async def test_identify_runs_at_startup(
     entry = MockConfigEntry(domain=DOMAIN_KEY, data=ENTRY_DATA, title="Home")
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # the startup identification waits for the recorder and the weather API
+    freezer.tick(timedelta(minutes=3))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
 
     state = hass.states.get("number.home_wall_loss_a")

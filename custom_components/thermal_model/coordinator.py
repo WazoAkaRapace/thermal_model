@@ -75,6 +75,9 @@ LIVE_REFRESH_COOLDOWN = timedelta(minutes=2)
 # The model is re-identified daily: the parameters drift with the season, and one
 # identification per day is cheap (a few seconds of recorder reads).
 IDENTIFY_INTERVAL = timedelta(hours=24)
+# Wait for the recorder and the weather API before the startup identification.
+IDENTIFY_STARTUP_DELAY = timedelta(minutes=2)
+IDENTIFY_RETRY_DELAY = timedelta(minutes=15)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -163,6 +166,23 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
     def _handle_identify_tick(self, _now: datetime) -> None:
         """Daily re-identification."""
         self.hass.async_create_task(self.async_identify(), "thermal_model identify (daily)")
+
+    async def async_identify_if_incomplete(self) -> None:
+        """Retry once when the first attempt ran on incomplete inputs.
+
+        Right after a start the statistics may not cover the window yet; a second
+        attempt a quarter of an hour later is cheap and usually enough.
+        """
+        from homeassistant.helpers.event import async_call_later
+
+        outcome = self.runtime.identification
+        if outcome is not None and outcome.ok and len(outcome.indoor_sources) >= 1:
+            return
+
+        async def _retry(_now: Any) -> None:
+            await self.async_identify()
+
+        async_call_later(self.hass, IDENTIFY_RETRY_DELAY, _retry)
 
     async def async_identify(self) -> None:
         """Fit the model on the recorded history and publish the parameters.

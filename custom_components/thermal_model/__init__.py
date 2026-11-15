@@ -14,6 +14,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 
 from .const import (
     CONF_CAPACITY,
@@ -128,7 +129,7 @@ def build_scenarios(data: dict, options: dict) -> tuple[ModelScenario, ...]:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Thermal Model from a config entry."""
-    from .coordinator import ThermalModelCoordinator
+    from .coordinator import IDENTIFY_STARTUP_DELAY, ThermalModelCoordinator
     from .db import Database
 
     data = entry.data
@@ -216,7 +217,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Identify the model from the recorder history: without this the published
     # parameters are the reference house's, which makes the forecast decorative.
-    hass.async_create_task(coordinator.async_identify(), "thermal_model identify")
+    # Delayed on purpose: right after a start, the recorder and the weather API are
+    # not ready, and an identification run on half the inputs publishes half a model
+    # (measured: one indoor source instead of sixteen, and zero irradiance, which also
+    # defeats the "this meter follows the sun" filter).
+    async def _identify_when_ready(_now: Any) -> None:
+        await coordinator.async_identify()
+        await coordinator.async_identify_if_incomplete()
+
+    entry.async_on_unload(async_call_later(hass, IDENTIFY_STARTUP_DELAY, _identify_when_ready))
 
     # The panel needs the entity ids to exist, so it is registered after the
     # platforms: an entity id is the registry's business, not a string we guess.
