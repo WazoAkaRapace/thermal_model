@@ -114,19 +114,24 @@ async def async_identify_model(
         options.get(CONF_LONGITUDE, entry_data.get(CONF_LONGITUDE, hass.config.longitude))
     )
 
+    # An explicit choice (the select entity or the entry option) wins over detection.
+    chosen_by_user = runtime.selected_power_sensor or options.get(CONF_HEATING_POWER_SENSOR)
+
     inputs, result = await build_inputs(
         hass,
         indoor_sensor=runtime.sources.indoor_sensor,
         outdoor_sensor=runtime.sources.outdoor_sensor,
         heating_entity=runtime.sources.heating_entity,
         days=days,
-        power_sensor=options.get(CONF_HEATING_POWER_SENSOR),
+        power_sensor=chosen_by_user,
         irradiance_sensor=options.get(CONF_IRRADIANCE_SENSOR),
         latitude=latitude,
         longitude=longitude,
         settings=ident_settings,
     )
 
+    # Publish the candidates so the select entity can offer them.
+    runtime.power_options = list(inputs.power_options)
     notes = tuple(inputs.reasons)
     if result is None:
         return IdentificationOutcome(

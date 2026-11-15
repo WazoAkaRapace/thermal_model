@@ -31,6 +31,7 @@ HEATING = "climate.living_room"
 INDOOR = "sensor.indoor_temperature"
 OUTDOOR = "sensor.outdoor_temperature"
 PAC = "sensor.pac_power"
+OTHER = "sensor.other_heater_power"
 JUNK_POWER = "sensor.lamp_power"
 ROOM = "sensor.room_thermometer"
 HOT_DEVICE = "sensor.contact_device_temperature"
@@ -56,6 +57,7 @@ def _synthetic(days: int = DAYS) -> dict[str, dict[datetime, float]]:
     outdoor: dict[datetime, float] = {}
     pac: dict[datetime, float] = {}
     junk: dict[datetime, float] = {}
+    other: dict[datetime, float] = {}
     for index, moment in enumerate(hours):
         fraction = index / len(hours)
         outside = 11.0 - 8.0 * fraction + 1.5 * ((index % 24) / 24.0 - 0.5)
@@ -70,8 +72,18 @@ def _synthetic(days: int = DAYS) -> dict[str, dict[datetime, float]]:
         indoor[moment] = inside
         outdoor[moment] = outside
         pac[moment] = 2400.0 if heating_on else 8.0
+        # A meter that misses one heating hour in eleven: still identifiable when the
+        # user picks it by hand, but a worse fit than the real one, so auto-detection
+        # has something to get right.
+        other[moment] = 2400.0 if (heating_on and index % 11) else 8.0
         junk[moment] = 30.0 + 15.0 * ((index % 5) / 5.0)
-    return {INDOOR: indoor, OUTDOOR: outdoor, PAC: pac, JUNK_POWER: junk}
+    return {
+        INDOOR: indoor,
+        OUTDOOR: outdoor,
+        PAC: pac,
+        OTHER: other,
+        JUNK_POWER: junk,
+    }
 
 
 @pytest.fixture
@@ -80,6 +92,7 @@ def power_states(hass: HomeAssistant) -> None:
     for entity_id, unit, peak in (
         (PAC, "W", 2400),
         (JUNK_POWER, "W", 45),
+        (OTHER, "W", 1500),
         ("sensor.giant_meter", "W", 40000),
     ):
         hass.states.async_set(
@@ -331,3 +344,35 @@ def test_a_mean_helper_is_not_its_own_history(
     flat = {_now() - HOUR * index: 21.0 for index in range(24 * 6)}
     assert statistics.pstdev(list(flat.values())) == 0
     assert "sensor.flat" in indoor_candidates({"sensor.flat": flat}, exclude=set())
+
+
+async def test_the_power_meter_can_be_chosen_by_the_user(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+) -> None:
+    """Detection is a supported guess; the user must be able to overrule it."""
+    await setup_entry.runtime_data.coordinator.async_identify()
+    await hass.async_block_till_done()
+
+    selector = hass.states.get("select.home_heating_power_meter")
+    assert selector is not None
+    assert "auto" in selector.attributes["options"]
+    assert PAC in selector.attributes["options"], "the detected candidates must be offered"
+    assert selector.state == "auto"
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": "select.home_heating_power_meter", "option": OTHER},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get("select.home_heating_power_meter").state == OTHER
+    identification = hass.states.get("number.home_wall_loss_a").attributes["identification"]
+    assert identification["heating_power_sensor"] == OTHER, (
+        "an explicit choice must win over auto-detection"
+    )

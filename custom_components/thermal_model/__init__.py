@@ -89,6 +89,8 @@ class ThermalModelRuntimeData:
     options: dict[str, Any] = field(default_factory=dict)
     entry_data: dict[str, Any] = field(default_factory=dict)
     identification: Any = None  # IdentificationOutcome, imported lazily
+    power_options: list[str] = field(default_factory=list)
+    selected_power_sensor: str | None = None
     scenarios: tuple[ModelScenario, ...] = ()
     storage_path: Path | None = None
 

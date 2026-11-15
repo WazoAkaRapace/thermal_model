@@ -59,7 +59,10 @@ _NOT_A_ROOM = (
 
 MIN_INDOOR_DAYS = 5
 MAX_INDOOR_SENSORS = 16
-MAX_POWER_CANDIDATES = 6
+MAX_POWER_CANDIDATES = 8
+# Meters that rise when the house cools are heating candidates even when their
+# variance is modest: a heat pump drawing 2.5 kW is outranked by any solar inverter.
+MAX_INVERSE_CANDIDATES = 4
 # A room temperature does not swing by more than a couple of degrees over a month,
 # and it sits inside this band. A door contact's hardware sensor is at 27 °C in a
 # 20 °C house; the outdoor probe is below zero. This filter is what removes them.
@@ -79,6 +82,7 @@ class ModelInputs:
     indoor_sources: list[str] = field(default_factory=list)
     heating_power_sensor: str | None = None
     solar_source: str = "open_meteo_past"
+    power_options: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -121,10 +125,26 @@ def indoor_candidates(values: dict[str, dict[datetime, float]], exclude: set[str
     return [statistic_id for _spread, statistic_id in selected[:MAX_INDOOR_SENSORS]]
 
 
+def _correlation(left: list[float], right: list[float]) -> float:
+    """Pearson correlation, 0 when either series is flat."""
+    if len(left) != len(right) or len(left) < 3:
+        return 0.0
+    mean_left = statistics.fmean(left)
+    mean_right = statistics.fmean(right)
+    covariance = sum((a - mean_left) * (b - mean_right) for a, b in zip(left, right, strict=False))
+    spread_left = sum((a - mean_left) ** 2 for a in left) ** 0.5
+    spread_right = sum((b - mean_right) ** 2 for b in right) ** 0.5
+    if spread_left == 0 or spread_right == 0:
+        return 0.0
+    return covariance / (spread_left * spread_right)
+
+
 def power_candidates(
     values: dict[str, dict[datetime, float]],
     exclude: set[str],
     unit_of: dict[str, str | None] | None = None,
+    indoor: dict[datetime, float] | None = None,
+    outdoor: dict[datetime, float] | None = None,
 ) -> list[str]:
     """Power meters worth trying as the heating input, most variable first.
 
@@ -145,7 +165,33 @@ def power_candidates(
             continue
         scored.append((statistics.pvariance(readings), statistic_id))
     scored.sort(reverse=True)
-    return [statistic_id for _variance, statistic_id in scored[:MAX_POWER_CANDIDATES]]
+    chosen = [statistic_id for _variance, statistic_id in scored[:MAX_POWER_CANDIDATES]]
+
+    # A heating meter rises when the house cools. Variance alone is a bad ranking: on
+    # a real installation the most variable meters were solar inverters and grid
+    # meters, and the heat pump was not among them.
+    if indoor:
+        inverse: list[tuple[float, str]] = []
+        for statistic_id, points in values.items():
+            if statistic_id in exclude or statistic_id in chosen:
+                continue
+            both = [(moment, value) for moment, value in sorted(points.items()) if moment in indoor]
+            if len(both) < 24 * 3:
+                continue
+            correlation = _correlation(
+                [
+                    _kw({moment: value}, unit_of.get(statistic_id)).get(moment, value)
+                    for moment, value in both
+                ],
+                [indoor[moment] for moment, _value in both],
+            )
+            if correlation < -0.1:
+                inverse.append((correlation, statistic_id))
+        inverse.sort()
+        chosen.extend(
+            statistic_id for _correlation_value, statistic_id in inverse[:MAX_INVERSE_CANDIDATES]
+        )
+    return chosen
 
 
 def _mean_series(series: dict[str, dict[datetime, float]]) -> tuple[list[datetime], list[float]]:
@@ -330,6 +376,8 @@ async def build_inputs(
             for entity_id in every_power
         }
         power_options = power_candidates(_points(discovered_power), exclude=wanted, unit_of=units)
+
+    inputs.power_options = list(power_options)
 
     # Phase 2: let the identifier choose the heating input. A house has a dozen power
     # meters; the one that explains the measured temperature is the heating.
