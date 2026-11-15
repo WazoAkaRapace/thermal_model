@@ -1,10 +1,11 @@
 {
   "domain": "thermal_model",
   "name": "Thermal Model",
+  "after_dependencies": ["history", "recorder", "weather"],
+  "categories": ["climate"],
   "codeowners": ["@WazoAkaRapace"],
   "config_flow": true,
   "dependencies": [],
-  "after_dependencies": ["recorder", "history", "weather"],
   "documentation": "https://github.com/WazoAkaRapace/thermal_model",
   "integration_type": "service",
   "iot_class": "cloud_polling",

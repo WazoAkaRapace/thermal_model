@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_DT_MINUTES,
@@ -65,11 +64,6 @@ class ThermalModelRuntimeData:
     sources: SourceBinding
     settings: ModelSettings
     missing_entities: set[str] = field(default_factory=set)
-
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the integration (YAML import is not supported on purpose)."""
-    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -150,7 +144,6 @@ __all__ = [
     "ModelSettings",
     "SourceBinding",
     "ThermalModelRuntimeData",
-    "async_setup",
     "async_setup_entry",
     "async_unload_entry",
 ]
