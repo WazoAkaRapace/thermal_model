@@ -416,3 +416,6 @@ async def test_daily_k_finishing_an_hourly_fit_returns_an_identification_result(
     assert identification["k_days"] > 0
     assert identification["energy_sensor"] == "sensor.pac_energy"
     assert float(hass.states.get("number.home_heating_gain_k").state) > 0
+    # the hourly fit said k was not identifiable; the daily balance filled it, so the
+    # published reasons must not keep saying so over a published k
+    assert "k_not_identified" not in identification["reasons"], identification["reasons"]

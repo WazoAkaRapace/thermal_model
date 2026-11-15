@@ -222,10 +222,18 @@ async def async_identify_model(
         len(inputs.indoor_sources),
         inputs.heating_power_sensor,
     )
+    # The hourly fit reports K_NOT_IDENTIFIED when its own regression could not
+    # separate k; once the daily balance has provided it, keeping that reason makes
+    # the entities say "k_not_identified" over a published k. Confusing on a real
+    # installation — drop it.
+    reasons = tuple(result.reasons)
+    if inputs.daily_k is not None and inputs.daily_k.ok and ReasonCode.K_NOT_IDENTIFIED in reasons:
+        reasons = tuple(code for code in reasons if code != ReasonCode.K_NOT_IDENTIFIED)
+
     return IdentificationOutcome(
         params=result.params,
         identifiability=result.identifiability,
-        reasons=tuple(result.reasons),
+        reasons=reasons,
         driving_spread=result.driving_spread,
         rmse_observed=result.rmse_observed,
         rmse_free_float=result.rmse_free_float,
