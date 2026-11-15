@@ -10,7 +10,11 @@
  * tests/js/chart_test.mjs).
  */
 
-export const UPLOT_VERSION = "1.6.32";
+export const APEXCHARTS_VERSION = "4.7.0";
+// Panels deliberately do NOT share an ApexCharts `chart.group`: group sync expects
+// the same series on every chart, and with 3/4/2 series the shared tooltip reported
+// the first series three times. Coherence comes from the shared time window, the
+// shared colours and the same axis unit — not from a sync that lies.
 
 export const COLORS = {
   measured: "#03a9f4",
@@ -276,116 +280,119 @@ function liveIndoor(forecasts) {
 }
 
 /** Y range over the indoor series only, padded: the outdoor scale is separate. */
-export function temperatureRange(series, scale) {
-  const values = series
-    .filter((entry) => entry.scale === scale)
-    .flatMap((entry) => entry.values || [])
-    .filter((value) => Number.isFinite(value));
-  if (!values.length) return scale === "y" ? [10, 25] : [-5, 15];
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (max - min < 1) {
-    min -= 0.5;
-    max += 0.5;
-  }
-  const padding = (max - min) * 0.08;
-  return [min - padding, max + padding];
-}
-
 /**
- * uPlot series configuration, in the same order as `buildChartData().series`.
- * Index 0 is always uPlot's mandatory time series.
+ * Panels are built on shared `x` (seconds); ApexCharts wants `[[ms, value]]` per
+ * series. A `null` means "no sample here" and is simply dropped rather than drawn
+ * as zero.
  */
-export function buildSeriesConfig(series, { hoursToShow }) {
-  const config = [
-    {
-      value: (self, raw) =>
-        raw === null || raw === undefined
-          ? "—"
-          : new Date(raw * 1000).toLocaleString(undefined, {
-              weekday: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-      spanGaps: false,
-    },
-  ];
-
-  for (const entry of series) {
-    config.push({
-      label: entry.label,
-      stroke: entry.color,
-      width: entry.width,
-      scale: entry.scale,
-      dash: entry.dash,
-      alpha: entry.alpha,
-      // padding nulls (hourly samples on a finer axis) must not break the line;
-      // the measured series keeps `spanGaps: false` so real holes stay visible
-      spanGaps: entry.id !== "measured",
-      points: { show: false },
-      value: (self, raw) =>
-        raw === null || raw === undefined ? "—" : `${raw.toFixed(1)} °C`,
-    });
-  }
-
-  return config;
-}
-
-/** Axis configuration: time on the left, temperature on both sides. */
-export function buildAxes(series, unit = "") {
-  const hasOutdoor = series.some((entry) => entry.scale === "out");
-  const grid = { stroke: "var(--divider-color, #e0e0e0)", width: 1 };
-  const common = {
-    stroke: "var(--secondary-text-color, #888)",
-    font: "11px system-ui, sans-serif",
-    ticks: { stroke: "var(--divider-color, #e0e0e0)" },
-    grid,
-  };
-
-  const axes = [
-    {
-      ...common,
-      // time is read from the tick labels themselves (14:00, lun. 16)
-      label: "",
-    },
-    {
-      ...common,
-      scale: "y",
-      size: 46,
-      label: unit,
-      labelSize: 16,
-      labelGap: 2,
-      labelFont: "11px system-ui, sans-serif",
-      values: (self, splits) => splits.map((value) => value.toFixed(0)),
-    },
-  ];
-  if (hasOutdoor) {
-    axes.push({
-      ...common,
-      scale: "out",
-      side: 1,
-      size: 46,
-      label: unit,
-      labelSize: 16,
-      labelGap: 2,
-      labelFont: "11px system-ui, sans-serif",
-      grid: { show: false },
-      ticks: { show: false },
-      values: (self, splits) => splits.map((value) => value.toFixed(0)),
-    });
-  }
-  return axes;
+export function toSeriesData(x, series) {
+  return series.map((entry) => {
+    const data = [];
+    for (let index = 0; index < x.length; index += 1) {
+      const value = entry.values[index];
+      if (value === null || value === undefined || !Number.isFinite(value)) continue;
+      data.push([x[index] * 1000, value]);
+    }
+    return {
+      name: entry.label,
+      data,
+      color: entry.color,
+      dash: Boolean(entry.dash),
+    };
+  });
 }
 
 /**
- * Split the chart into several small, coherent panels instead of one giant plot.
+ * ApexCharts options for one panel.
  *
- * A single figure with eleven series and two y scales is unreadable: the eye
- * cannot match a dashed line to its scenario, and the outdoor scale drags the
- * indoor range. Each panel below answers one question, shares the same time axis
- * (so they line up) and the same colours (so a series is recognisable across
- * panels).
+ * Everything the panel used to hand-roll is a first-class option here: the y axis
+ * title carries the unit, tick labels are numbers, the tooltip lists every series at
+ * the hovered instant (the axis values stay put while it is open), the "now" marker
+ * is an annotation, and the legend toggles a series on click.
  */
+export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
+  const series = toSeriesData(x, panel.series);
+  const textColor = dark ? "#b0b0b0" : "#5f6368";
+  const gridColor = dark ? "#333" : "#e0e0e0";
+
+  return {
+    chart: {
+      type: "line",
+      height: 220,
+      id: panel.id,
+      background: "transparent",
+      fontFamily: "inherit",
+      parentHeightOffset: 0,
+      animations: { enabled: false },
+      toolbar: { show: false },
+      zoom: { enabled: true, type: "x" },
+      sparkline: { enabled: false },
+    },
+    series,
+    colors: series.map((entry) => entry.color),
+    stroke: {
+      curve: "smooth",
+      width: panel.series.map((entry) => entry.width || 2),
+      dashArray: panel.series.map((entry) => (entry.dash ? 5 : 0)),
+    },
+    markers: { size: 0, hover: { size: 4 }, strokeWidth: 0 },
+    dataLabels: { enabled: false },
+    grid: { borderColor: gridColor, strokeDashArray: 3, padding: { left: 4, right: 8 } },
+    xaxis: {
+      type: "datetime",
+      labels: {
+        style: { colors: textColor, fontSize: "11px" },
+        datetimeUTC: false,
+      },
+      axisBorder: { color: gridColor },
+      axisTicks: { color: gridColor },
+      tooltip: { enabled: false },
+    },
+    yaxis: {
+      title: {
+        text: panel.unit,
+        style: { color: textColor, fontSize: "11px", fontWeight: 600 },
+      },
+      labels: {
+        style: { colors: textColor, fontSize: "11px" },
+        formatter: (value) => (Number.isFinite(value) ? value.toFixed(0) : ""),
+      },
+    },
+    legend: {
+      show: true,
+      position: "bottom",
+      horizontalAlign: "left",
+      fontSize: "11px",
+      labels: { colors: textColor },
+      markers: { size: 5 },
+      itemMargin: { horizontal: 8, vertical: 0 },
+      onItemClick: { toggleDataSeries: true },
+    },
+    tooltip: {
+      shared: true,
+      intersect: false,
+      theme: dark ? "dark" : "light",
+      x: { format: "ddd HH:mm" },
+      y: { formatter: (value) => (Number.isFinite(value) ? `${value.toFixed(1)} ${panel.unit}` : "") },
+    },
+    annotations: {
+      xaxis: [
+        {
+          x: nowMs,
+          borderColor: "#e53935",
+          strokeDashArray: 4,
+          label: {
+            text: "maintenant",
+            borderWidth: 0,
+            style: { background: "#e53935", color: "#fff", fontSize: "10px" },
+          },
+        },
+      ],
+    },
+    noData: { text: "—", style: { color: textColor, fontSize: "12px" } },
+  };
+}
+
 export function buildPanels({ history, forecasts, nowMs, primaryScenario, maxArchived = 3 }) {
   const data = buildChartData({ history, forecasts, nowMs });
   const indoor = data.series.filter((entry) => entry.scale === "y");

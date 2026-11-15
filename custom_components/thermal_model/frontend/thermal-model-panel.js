@@ -2,36 +2,34 @@
  * Thermal Model — sidebar panel.
  *
  * Several small charts, not one giant one: each panel answers one question, they
- * share the same time axis and colours, and their cursors are synced.
+ * share the same time window and colours, and ApexCharts syncs tooltips, cursors and
+ * zoom across panels that declare the same `chart.group` — so they read as one
+ * instrument.
  *
- * Update contract (per the Home Assistant frontend docs, "The hass object"):
- * a new `hass` object is pushed on EVERY state change, but unchanged parts keep
- * their identity — so the panel compares the states it actually uses by reference
- * and does nothing when they are the same. Renders are coalesced into one animation
- * frame, text nodes are updated in place, and the charts only receive `setData`
- * when the data really changed. Rendering everything on every push is what makes a
- * panel flicker on a busy installation (~4000 entities here).
+ * The chart is ApexCharts (vendored, MIT — see VENDOR.md): tick values, shared
+ * tooltip, axis titles with units, annotations and the legend are library features,
+ * not code we maintain. Earlier attempts with a hand-rolled renderer and then a
+ * minimal plotting library both broke on exactly those behaviours.
  *
- * The chart itself is uPlot (vendored, MIT — see VENDOR.md). Data, panel layout and
- * timestamp parsing live in thermal-model-chart.mjs so they can be tested in node.
+ * Update contract (Home Assistant frontend docs, "The hass object"): a new `hass`
+ * object is pushed on EVERY state change while unchanged parts keep their identity.
+ * The panel therefore compares the states it uses by reference, coalesces renders
+ * into one timer, updates text nodes only when their value changes, and skips the
+ * chart update unless the data actually moved. Rendering on every push is what made
+ * an earlier version flicker.
  */
 
 import {
-  UPLOT_VERSION,
+  APEXCHARTS_VERSION,
   ARCHIVED_PREFIX,
-  buildAxes,
+  buildPanelOptions,
   buildPanels,
-  buildSeriesConfig,
   parseHistoryRows,
   summarise,
-  temperatureRange,
 } from "./thermal-model-chart.mjs";
 
-const PANEL_HEIGHT = 200;
 const HISTORY_REFRESH_MS = 5 * 60 * 1000;
 const PAST_HOURS = 48;
-const FUTURE_HOURS = 48;
-const CURSOR_KEY = "thermal-model";
 const PANEL_ORDER = ["indoor", "past", "outdoor"];
 
 const CSS = `
@@ -67,7 +65,7 @@ const CSS = `
   .banner { margin-top: 10px; padding: 8px 10px; border-radius: 8px;
     background: rgba(255, 152, 0, 0.12); font-size: 0.85rem; color: var(--primary-text-color); }
   .banner.err { background: rgba(244, 67, 54, 0.12); }
-  .chart { width: 100%; }
+  .chart { width: 100%; min-height: 220px; }
   .foot { color: var(--secondary-text-color); font-size: 0.75rem; margin-top: 8px; }
   .params { display: flex; flex-wrap: wrap; gap: 10px; }
   .param { display: flex; align-items: center; gap: 6px; border: 1px solid var(--divider-color);
@@ -106,13 +104,12 @@ class ThermalModelPanel extends HTMLElement {
     this._historyError = null;
     this._historyTimer = null;
     this._loading = false;
-    this._charts = new Map(); // panel id -> { chart, signature, target, observer }
+    this._charts = new Map(); // panel id -> ApexCharts instance
     this._cards = new Map();
-    this._uplotPromise = null;
+    this._libraryPromise = null;
     this._shellBuilt = false;
     this._frame = null;
-    this._seenStates = new Map(); // entity id -> state object (identity comparison)
-    this._seenHistoryKey = null;
+    this._seenStates = new Map();
     this._textCache = new Map();
   }
 
@@ -123,8 +120,6 @@ class ThermalModelPanel extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    // Docs: a new hass is made on every change, unchanged parts keep identity.
-    // Repainting on every push is what makes a panel flicker on a busy instance.
     const changed = this._collectChanges(hass);
     if (!changed) return;
     if (!this._history && !this._loading) this._loadHistory();
@@ -140,14 +135,21 @@ class ThermalModelPanel extends HTMLElement {
   disconnectedCallback() {
     if (this._historyTimer) window.clearInterval(this._historyTimer);
     if (this._frame) clearTimeout(this._frame);
-    for (const entry of this._charts.values()) {
-      if (entry.observer) entry.observer.disconnect();
-      if (entry.chart) entry.chart.destroy();
+    for (const chart of this._charts.values()) {
+      try {
+        chart.destroy();
+      } catch {
+        /* already gone */
+      }
     }
     this._charts.clear();
   }
 
   // -- change detection ------------------------------------------------
+  _config() {
+    return (this._panel && this._panel.config) || {};
+  }
+
   _relevantIds() {
     const config = this._config();
     return [
@@ -158,7 +160,6 @@ class ThermalModelPanel extends HTMLElement {
     ];
   }
 
-  /** True when one of the entities this panel shows actually changed. */
   _collectChanges(hass) {
     const states = (hass && hass.states) || {};
     let changed = false;
@@ -173,10 +174,6 @@ class ThermalModelPanel extends HTMLElement {
   }
 
   // -- data -----------------------------------------------------------
-  _config() {
-    return (this._panel && this._panel.config) || {};
-  }
-
   _forecasts() {
     const forecasts = {};
     for (const [scenario, entityId] of Object.entries(this._config().scenarios || {})) {
@@ -220,21 +217,23 @@ class ThermalModelPanel extends HTMLElement {
     }
   }
 
-  // -- uPlot ----------------------------------------------------------
-  async _ensureUplot() {
-    if (window.uPlot) return window.uPlot;
-    if (!this._uplotPromise) {
-      this._uplotPromise = new Promise((resolve, reject) => {
+  // -- ApexCharts ------------------------------------------------------
+  async _ensureLibrary() {
+    if (window.ApexCharts) return window.ApexCharts;
+    if (!this._libraryPromise) {
+      this._libraryPromise = new Promise((resolve, reject) => {
         const script = document.createElement("script");
-        script.src = new URL("./uplot.min.js", import.meta.url).href;
+        script.src = new URL("./apexcharts.min.js", import.meta.url).href;
         script.async = true;
         script.onload = () =>
-          window.uPlot ? resolve(window.uPlot) : reject(new Error("uPlot vide après chargement"));
-        script.onerror = () => reject(new Error("module uPlot introuvable"));
+          window.ApexCharts
+            ? resolve(window.ApexCharts)
+            : reject(new Error("ApexCharts vide après chargement"));
+        script.onerror = () => reject(new Error("module ApexCharts introuvable"));
         document.head.appendChild(script);
       });
     }
-    return this._uplotPromise;
+    return this._libraryPromise;
   }
 
   _panelCard(panel) {
@@ -257,20 +256,7 @@ class ThermalModelPanel extends HTMLElement {
     return card;
   }
 
-  /** Signature of what the charts would draw: skip setData when it did not move. */
-  _dataSignature(x, panels) {
-    const reference = Object.values(this._forecasts())[0] || {};
-    return [
-      x.length,
-      x.length ? x[0] : 0,
-      x.length ? x[x.length - 1] : 0,
-      reference.issued_at || "",
-      (this._history && this._history.indoor && this._history.indoor.length) || 0,
-      panels.map((panel) => panel.series.map((entry) => entry.id).join(",")).join("|"),
-    ].join("§");
-  }
-
-  async _renderPanels(x, panels) {
+  async _renderPanels(x, panels, nowMs) {
     if (!x.length || !panels.length) {
       if (this._charts.size === 0) {
         this._setChartHost(
@@ -279,94 +265,36 @@ class ThermalModelPanel extends HTMLElement {
       }
       return;
     }
-    const measuredWidth = (this._chartHost && this._chartHost.clientWidth) || 0;
-    if (measuredWidth <= 0 && this._charts.size === 0) return; // wait for layout
-
-    const uPlot = await this._ensureUplot();
-    const width = Math.max(320, measuredWidth || 900);
+    const Library = await this._ensureLibrary();
+    const dark =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 
     for (const panel of panels) {
       const card = this._panelCard(panel);
       const target = card.querySelector(".chart");
       const signature = panel.series.map((entry) => entry.id).join("|");
-      let state = this._charts.get(panel.id);
+      const existing = this._charts.get(panel.id);
 
-      if (state && state.signature !== signature) {
-        if (state.observer) state.observer.disconnect();
-        state.chart.destroy();
+      if (existing && existing.__signature !== signature) {
+        existing.destroy();
         this._charts.delete(panel.id);
         target.innerHTML = "";
-        state = undefined;
       }
 
-      const columns = [x, ...panel.series.map((entry) => entry.values)];
+      const chart = this._charts.get(panel.id);
+      const options = buildPanelOptions(panel, x, { nowMs, dark });
 
-      if (state) {
-        state.chart.setData(columns);
-        if (Math.abs(state.chart.width - width) > 4) {
-          state.chart.setSize({ width, height: PANEL_HEIGHT });
-        }
+      if (chart) {
+        // No animation, no full re-render: just the data and the "now" marker.
+        await chart.updateSeries(options.series, false);
         continue;
       }
 
       target.innerHTML = "";
-      const nowMarker = {
-        hooks: {
-          draw: (u) => {
-            const { ctx } = u;
-            const position = u.valToPos(Date.now() / 1000, "x");
-            if (!Number.isFinite(position)) return;
-            ctx.save();
-            ctx.strokeStyle = "#e53935";
-            ctx.lineWidth = 1;
-            ctx.setLineDash([5, 4]);
-            ctx.beginPath();
-            ctx.moveTo(position, u.bbox.top);
-            ctx.lineTo(position, u.bbox.top + u.bbox.height);
-            ctx.stroke();
-            ctx.restore();
-          },
-        },
-      };
-
-      const chart = new uPlot(
-        {
-          width,
-          height: PANEL_HEIGHT,
-          padding: [10, 10, 0, 0],
-          legend: { show: true, live: true },
-          cursor: {
-            sync: { key: CURSOR_KEY, setSeries: false },
-            drag: { setScale: true, x: true, y: false, dist: 8 },
-            focus: { prox: 30 },
-          },
-          scales: {
-            x: { time: true },
-            y: { range: () => temperatureRange(panel.series, "y") },
-            out: { range: () => temperatureRange(panel.series, "out") },
-          },
-          axes: buildAxes(panel.series, panel.unit),
-          series: buildSeriesConfig(panel.series, { hoursToShow: PAST_HOURS + FUTURE_HOURS }),
-        },
-        columns,
-        target,
-        [nowMarker],
-      );
-
-      const observer =
-        typeof ResizeObserver === "function"
-          ? new ResizeObserver(() => {
-              const current = target.clientWidth;
-              if (current > 0 && Math.abs(chart.width - current) > 4) {
-                chart.setSize({ width: current, height: PANEL_HEIGHT });
-              }
-            })
-          : null;
-      if (observer) observer.observe(target);
-
-      target.addEventListener("dblclick", () => chart.setScale("x", { min: null, max: null }));
-
-      this._charts.set(panel.id, { chart, signature, target, observer });
+      const instance = new Library(target, options);
+      await instance.render();
+      instance.__signature = signature;
+      this._charts.set(panel.id, instance);
     }
   }
 
@@ -374,7 +302,6 @@ class ThermalModelPanel extends HTMLElement {
   _buildShell() {
     this.shadowRoot.innerHTML = `
       <style>${CSS}</style>
-      <link rel="stylesheet" href="${new URL("./uplot.min.css", import.meta.url).href}">
       <div class="wrap">
         <div class="card">
           <div class="row" style="justify-content: space-between">
@@ -424,7 +351,6 @@ class ThermalModelPanel extends HTMLElement {
     this._shellBuilt = true;
   }
 
-  /** Write a text node only when its content changed (no layout churn). */
   _setText(node, key, value) {
     if (!node) return;
     if (this._textCache.get(key) === value) return;
@@ -448,12 +374,9 @@ class ThermalModelPanel extends HTMLElement {
   _scheduleRender(force = false) {
     if (force) this._textCache.clear();
     if (this._frame) return;
-    // A coalescing timeout rather than requestAnimationFrame: rAF does not fire in
-    // a background tab or a headless browser, and the panel must still render.
     this._frame = setTimeout(() => {
       this._frame = null;
       this._update().catch((err) => {
-        // Never swallow: a silent failure here means a blank panel with no clue.
         console.error("Thermal Model panel: render failed", err);
       });
     }, 16);
@@ -476,7 +399,7 @@ class ThermalModelPanel extends HTMLElement {
     const summary = summarise({ data, forecasts, nowMs });
 
     this._setText(this._nodes.title, "title", (this._panel && this._panel.title) || "Thermal Model");
-    this._setText(this._nodes.engine, "engine", `· moteur uPlot ${UPLOT_VERSION}`);
+    this._setText(this._nodes.engine, "engine", `· ApexCharts ${APEXCHARTS_VERSION}`);
     this._setText(
       this._nodes.now,
       "now",
@@ -558,7 +481,7 @@ class ThermalModelPanel extends HTMLElement {
               .map((entry) => entry.label.split("il y a ")[1])
               .join(", ")}`
           : "aucune prévision passée archivée pour l'instant",
-        "survol et zoom synchronisés entre les graphiques, double-clic pour revenir",
+        "survol, curseur et zoom synchronisés entre les graphiques · clic sur une légende pour masquer une série",
         `diagnostic : ${Object.keys(forecasts).length}/${scenarioEntries.length} scénario(s) · historique ${
           (this._history && this._history.indoor && this._history.indoor.length) || 0
         } point(s) · ${panels.length} graphique(s) · ${data.series.length} série(s) · largeur ${
@@ -576,10 +499,17 @@ class ThermalModelPanel extends HTMLElement {
     );
     this._renderParams(config);
 
-    const signature = this._dataSignature(x, panels);
+    const signature = [
+      x.length,
+      x.length ? x[0] : 0,
+      x.length ? x[x.length - 1] : 0,
+      reference.issued_at || "",
+      (this._history && this._history.indoor && this._history.indoor.length) || 0,
+      panels.map((panel) => panel.series.map((entry) => entry.id).join(",")).join("|"),
+    ].join("§");
     if (this._textCache.get("chartSignature") !== signature) {
       this._textCache.set("chartSignature", signature);
-      return this._renderPanels(x, panels).catch((err) => {
+      return this._renderPanels(x, panels, nowMs).catch((err) => {
         this._setChartHost(
           `<div class="card"><div class="empty">Graphiques indisponibles :
             ${escapeHtml((err && err.message) || err)}</div></div>`,
@@ -589,7 +519,6 @@ class ThermalModelPanel extends HTMLElement {
     return Promise.resolve();
   }
 
-  /** Chips are built once; only the numbers are refreshed afterwards. */
   _renderParams(config) {
     const keys = Object.keys(PARAM_LABELS).filter(
       (key) => config.numbers && config.numbers[key],
