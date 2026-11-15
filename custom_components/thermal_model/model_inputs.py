@@ -59,10 +59,10 @@ _NOT_A_ROOM = (
 
 MIN_INDOOR_DAYS = 5
 MAX_INDOOR_SENSORS = 16
-MAX_POWER_CANDIDATES = 8
+MAX_POWER_CANDIDATES = 40
 # Meters that rise when the house cools are heating candidates even when their
 # variance is modest: a heat pump drawing 2.5 kW is outranked by any solar inverter.
-MAX_INVERSE_CANDIDATES = 4
+MAX_INVERSE_CANDIDATES = 40
 # A room temperature does not swing by more than a couple of degrees over a month,
 # and it sits inside this band. A door contact's hardware sensor is at 27 °C in a
 # 20 °C house; the outdoor probe is below zero. This filter is what removes them.
@@ -319,10 +319,14 @@ async def build_inputs(
             )
             return inputs, None
         if indoor_points:
+            history = (
+                f"{len(indoor_points) // 24} jour(s)"
+                if len(indoor_points) >= 24
+                else f"{len(indoor_points)} heure(s)"
+            )
             inputs.reasons.append(
-                f"le capteur intérieur {indoor_sensor} n'a que "
-                f"{len(indoor_points) // 24} jour(s) d'historique : moyenne de "
-                f"{len(indoor_series)} thermomètre(s) à la place"
+                f"le capteur intérieur {indoor_sensor} n'a que {history} d'historique : "
+                f"moyenne de {len(indoor_series)} thermomètre(s) à la place"
             )
 
     hours, tin = _mean_series(indoor_series)
@@ -383,9 +387,12 @@ async def build_inputs(
     # meters; the one that explains the measured temperature is the heating.
     best: tuple[float, str, Any, list[float], Any] | None = None
     failures: list[str] = []
+    # One read for every candidate: a query per candidate would be dozens of database
+    # round trips for a job that runs daily.
+    every_series = await async_read_statistics(hass, power_options, days) if power_options else {}
+    every_points = _points(every_series)
     for candidate in power_options:
-        series = await async_read_statistics(hass, [candidate], days)
-        points = _points(series).get(candidate) or {}
+        points = every_points.get(candidate) or {}
         if len(points) < len(hours) * 0.6:
             failures.append(f"{candidate}: historique trop court")
             continue
