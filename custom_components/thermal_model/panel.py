@@ -51,7 +51,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 VIEW_NAME = "api:thermal_model:frontend"
 VIEW_URL = f"/{DOMAIN_KEY}/frontend/{{version}}/{{file_name}}"
 
-_ALLOWED_SUFFIXES = {".js", ".css", ".svg", ".png"}
+_ALLOWED_SUFFIXES = {".js", ".mjs", ".css", ".svg", ".png"}
 
 
 class PanelFilesView(HomeAssistantView):
@@ -79,7 +79,7 @@ class PanelFilesView(HomeAssistantView):
         # The panel changes on every integration update: revalidate instead of
         # letting the browser serve a stale module.
         response.headers["Cache-Control"] = "no-cache"
-        if candidate.suffix == ".js":
+        if candidate.suffix in (".js", ".mjs"):
             # An ES module served with a non-JS MIME type is refused by browsers,
             # and some hosts map .js to text/plain.
             response.headers["Content-Type"] = "text/javascript"

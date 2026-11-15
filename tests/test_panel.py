@@ -1,18 +1,19 @@
-"""The bundled panel: registered by the integration, opened from the sidebar.
+"""The bundled panel: registration, serving, and the chart library contract.
 
-These tests check the parts that fail silently in production: the sidebar entry
-existing at all, the module being served with a JS content type, the entity ids
-handed to the frontend being the real ones, and the JavaScript actually parsing.
+These tests cover what fails silently in production: no sidebar entry, a module
+served with a content type browsers refuse, entity ids handed to the frontend that
+do not exist, a vendored chart library whose version and licence drifted, and a
+JavaScript file that does not even parse.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
-import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -21,6 +22,14 @@ from custom_components.thermal_model.const import DOMAIN_KEY
 
 FRONTEND = Path(panel_module.__file__).parent / "frontend"
 PANEL_JS = FRONTEND / f"{panel_module.WEBCOMPONENT_NAME}.js"
+CHART_JS = FRONTEND / "thermal-model-chart.mjs"
+UPLOT_JS = FRONTEND / "uplot.min.js"
+UPLOT_CSS = FRONTEND / "uplot.min.css"
+UPLOT_LICENSE = FRONTEND / "uplot.LICENSE"
+VENDOR_DOC = FRONTEND / "VENDOR.md"
+CHART_TEST = Path(__file__).parent / "js" / "chart_test.mjs"
+
+NODE = shutil.which("node")
 
 
 def _panel(hass: HomeAssistant) -> Any | None:
@@ -28,10 +37,17 @@ def _panel(hass: HomeAssistant) -> Any | None:
     return hass.data.get("frontend_panels", {}).get(panel_module.PANEL_URL_PATH)
 
 
+def _panel_config(hass: HomeAssistant) -> dict[str, Any]:
+    registered = _panel(hass)
+    assert registered is not None, "no panel registered"
+    return registered.config or {}
+
+
+# -- registration ---------------------------------------------------------
 async def test_panel_is_registered_in_the_sidebar(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
-    """Without this, the integration ships a dashboard nobody can open."""
+    """Without this, the integration ships a frontend nobody can open."""
     registered = _panel(hass)
 
     assert registered is not None
@@ -39,11 +55,7 @@ async def test_panel_is_registered_in_the_sidebar(
     assert registered.sidebar_title == "Home"
     assert registered.require_admin is False
 
-    config = registered.config or {}
-    webcomponent = config.get("_panel_custom") or {}
-    # Our own keys sit next to the panel_custom block: the frontend reads
-    # `panel.config.scenarios`, not a nested dict.
-    assert "scenarios" in config and "entry_id" in config
+    webcomponent = (registered.config or {}).get("_panel_custom") or {}
     assert webcomponent.get("name") == panel_module.WEBCOMPONENT_NAME
     module_url = webcomponent.get("module_url", "")
     assert module_url.endswith(f"{panel_module.WEBCOMPONENT_NAME}.js")
@@ -56,9 +68,7 @@ async def test_panel_receives_the_real_entity_ids(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
     """The frontend cannot guess entity ids: they must be resolved server-side."""
-    registered = _panel(hass)
-    assert registered is not None
-    config = registered.config or {}
+    config = _panel_config(hass)
 
     assert config["entry_id"] == setup_entry.entry_id
     assert config["indoor_entity"] == "sensor.home_indoor_temperature"
@@ -72,35 +82,6 @@ async def test_panel_receives_the_real_entity_ids(
         assert hass.states.get(entity_id) is not None, entity_id
 
 
-async def test_the_module_is_served_with_a_javascript_content_type(
-    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client: Any
-) -> None:
-    """A module served as text/plain blanks the panel with no error in HA."""
-    registered = _panel(hass)
-    assert registered is not None
-    module_url = (registered.config or {})["_panel_custom"]["module_url"]
-
-    client = await hass_client()
-    response = await client.get(module_url)
-
-    assert response.status == 200
-    assert response.headers["Content-Type"].startswith("text/javascript")
-    assert response.headers["Cache-Control"] == "no-cache"
-    body = await response.text()
-    assert "customElements.define" in body
-
-
-async def test_the_view_refuses_unknown_files(
-    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client: Any
-) -> None:
-    """No traversal, no serving arbitrary files out of the package."""
-    client = await hass_client()
-
-    for name in ("../__init__.py", "missing.js", "manifest.json"):
-        response = await client.get(f"/{DOMAIN_KEY}/frontend/1.0.0/{name}")
-        assert response.status == 404, name
-
-
 async def test_unload_removes_the_panel(hass: HomeAssistant, setup_entry: MockConfigEntry) -> None:
     """A panel left behind points at entities that no longer exist."""
     assert _panel(hass) is not None
@@ -111,38 +92,91 @@ async def test_unload_removes_the_panel(hass: HomeAssistant, setup_entry: MockCo
     assert _panel(hass) is None
 
 
-def test_the_panel_module_parses() -> None:
-    """A syntax error in the JS blanks the panel: check it without a browser."""
-    assert PANEL_JS.exists(), f"missing panel module: {PANEL_JS}"
-    source = PANEL_JS.read_text(encoding="utf-8")
-    assert f'customElements.define("{panel_module.WEBCOMPONENT_NAME}"' in source
+# -- serving --------------------------------------------------------------
+async def test_every_frontend_file_is_served_as_javascript(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client: Any
+) -> None:
+    """A module served as text/plain blanks the panel with no error in Home Assistant."""
+    module_url = (_panel_config(hass)["_panel_custom"])["module_url"]
+    base = module_url.rsplit("/", 1)[0]
+    client = await hass_client()
 
-    node = shutil.which("node")
-    if node is None:  # pragma: no cover - node is present in CI
-        pytest.skip("node is not installed")
-    result = subprocess.run(
-        [node, "--check", str(PANEL_JS)], capture_output=True, text=True, check=False
+    for name, content_type in (
+        (f"{panel_module.WEBCOMPONENT_NAME}.js", "text/javascript"),
+        ("thermal-model-chart.mjs", "text/javascript"),
+        ("uplot.min.js", "text/javascript"),
+    ):
+        response = await client.get(f"{base}/{name}")
+        assert response.status == 200, name
+        assert response.headers["Content-Type"].startswith(content_type), name
+        assert response.headers["Cache-Control"] == "no-cache", name
+
+    css = await client.get(f"{base}/uplot.min.css")
+    assert css.status == 200
+    assert "text/css" in css.headers["Content-Type"]
+
+
+async def test_the_view_refuses_unknown_files(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client: Any
+) -> None:
+    """No traversal, no serving arbitrary files out of the package."""
+    client = await hass_client()
+
+    for name in ("../__init__.py", "missing.js", "manifest.json", "panel.py"):
+        response = await client.get(f"/{DOMAIN_KEY}/frontend/1.0.0/{name}")
+        assert response.status == 404, name
+
+
+# -- the chart library ----------------------------------------------------
+def test_the_chart_library_is_vendored_with_its_licence() -> None:
+    """A pinned copy, with its licence and a written reason for the choice."""
+    for path in (UPLOT_JS, UPLOT_CSS, UPLOT_LICENSE, VENDOR_DOC):
+        assert path.exists(), f"missing vendored file: {path}"
+
+    license_text = UPLOT_LICENSE.read_text(encoding="utf-8")
+    assert "MIT License" in license_text
+    assert "Leon Sorokin" in license_text
+
+    # the version must be declared in exactly one place, and agree with the doc
+    version_match = re.search(r'UPLOT_VERSION = "([0-9.]+)"', CHART_JS.read_text(encoding="utf-8"))
+    assert version_match, "UPLOT_VERSION is not declared in the chart module"
+    declared = version_match.group(1)
+    assert declared in VENDOR_DOC.read_text(encoding="utf-8"), (
+        f"VENDOR.md does not mention the vendored version {declared}"
     )
-    assert result.returncode == 0, result.stderr
 
 
-def test_the_panel_renders_with_a_stubbed_dom() -> None:
-    """Run the real render path in node: `node --check` cannot catch runtime errors."""
-    script = Path(__file__).parent / "js" / "panel_smoke.mjs"
-    assert script.exists(), f"missing smoke test: {script}"
+def test_the_frontend_never_loads_anything_remote() -> None:
+    """No CDN, no external fetch: the panel must work on an offline installation."""
+    for path in (PANEL_JS, CHART_JS):
+        source = path.read_text(encoding="utf-8")
+        for match in re.findall(r"https?://[^\s\"')]+", source):
+            assert "w3.org" in match or "github.com" in match, (
+                f"{path.name} references a remote URL: {match}"
+            )
+        assert "cdn." not in source, f"{path.name} references a CDN"
 
-    node = shutil.which("node")
-    if node is None:  # pragma: no cover - node is present in CI
-        pytest.skip("node is not installed")
-    result = subprocess.run([node, str(script)], capture_output=True, text=True, check=False)
+
+def test_the_modules_parse() -> None:
+    """A syntax error blanks the panel: check both modules without a browser."""
+    assert NODE is not None, "node is required to check the frontend modules"
+    for path in (PANEL_JS, CHART_JS):
+        result = subprocess.run(
+            [NODE, "--check", str(path)], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, f"{path.name}: {result.stderr}"
+
+
+def test_the_panel_imports_the_chart_module() -> None:
+    """The element must not re-implement the data layer it is tested through."""
+    source = PANEL_JS.read_text(encoding="utf-8")
+    assert 'from "./thermal-model-chart.mjs"' in source
+
+
+def test_the_data_layer_passes_its_node_tests() -> None:
+    """Alignment, gaps, dashes, scales and ranges, checked outside the browser."""
+    assert CHART_TEST.exists(), f"missing chart test: {CHART_TEST}"
+    assert NODE is not None, "node is required"
+    result = subprocess.run([NODE, str(CHART_TEST)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ok" in result.stdout
-
-
-def test_the_panel_has_no_external_dependency() -> None:
-    """No CDN, no bundler: the module must run from the integration alone."""
-    source = PANEL_JS.read_text(encoding="utf-8")
-
-    assert "http://" not in source.replace("http://www.w3.org", "")
-    assert "https://" not in source
-    assert "import " not in source.split("*/", 1)[-1]

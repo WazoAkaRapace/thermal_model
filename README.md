@@ -57,12 +57,14 @@ diagnostics and the reasons a parameter can honestly come back as `unknown` are 
 ## Panels and dashboards
 
 The integration registers **its own sidebar panel** (`/thermal-model`). Nothing to
-import: it is served and maintained by the integration, needs no custom card and
-no framework, and draws one time axis with 48 h of **measured** indoor
-temperature, the 48 h **forecasts** of each scenario, and the forecasts **issued
-6 h / 12 h / 24 h ago** — the only way to see whether the model anticipates the
-house or merely agrees with itself. A weather outage keeps the previous
-trajectories and flags them stale instead of blanking the page.
+import: it is served and maintained by the integration, needs no custom card, and
+draws one time axis with 48 h of **measured** indoor temperature, the 48 h
+**forecasts** of each scenario, and the forecasts **issued 6 h / 12 h / 24 h ago**
+— the only way to see whether the model anticipates the house or merely agrees
+with itself. The chart is a vendored **uPlot** (MIT, 51 KB), so axes, cursor,
+legend and zoom are a library's job; the measured line breaks on real holes in the
+recorder history instead of drawing across them. A weather outage keeps the
+previous trajectories and flags them stale instead of blanking the page.
 
 An optional Lovelace dashboard ships too, in
 [`dashboards/thermal_model.yaml`](dashboards/thermal_model.yaml), for people who
@@ -71,10 +73,10 @@ second).
 
 See [`docs/dashboard.md`](docs/dashboard.md). The frontends are covered by tests
 that would otherwise only fail in a browser: `tests/test_panel.py` (sidebar entry,
-served module, real entity ids, path traversal, `node --check` no external
-dependency), `tests/js/panel_smoke.mjs` (runs the real render path in node against
-a stubbed DOM) and `tests/test_dashboard.py` (every YAML reference against a live
-entry).
+served modules, real entity ids, path traversal, vendored-library licence and
+version, `node --check`) and `tests/js/chart_test.mjs` (the chart data layer in
+node: alignment, gaps, dashes, per-series scales), plus `tests/test_dashboard.py`
+(every YAML reference against a live entry).
 
 ## Status
 

@@ -12,8 +12,23 @@ wherever the registry moves them.
   `/{domain}/frontend/{version}/thermal-model-panel.js`, authenticated, with
   `Content-Type: text/javascript` and `Cache-Control: no-cache`, and the version in
   the path so a browser never mixes an old module with new ones after an update;
-- it is plain DOM + inline SVG: **no framework, no build step, no CDN**, so
-  `requirements` stays empty and nothing is fetched from a third party.
+- the chart is drawn by **uPlot** (vendored, MIT, 51 KB raw / 22 KB gzipped), so
+  axes with time ticks, the shared cursor, the clickable legend, drag-to-zoom,
+  high-DPI rendering and gap handling come from a library instead of being
+  re-implemented. Nothing is fetched from a CDN and `requirements` stays empty.
+
+### Chart library
+
+| Candidate | Why not |
+|---|---|
+| ApexCharts (~570 KB) | the same lib as apexcharts-card, but 11× the size for one chart |
+| ECharts (~1 MB) | far too heavy for a panel served to every user, mobile included |
+| Chart.js (~200 KB) | needs a date adapter and plugins to reach time-series parity |
+| hand-rolled SVG | what this replaced: every basic feature had to be written and tested by hand |
+
+uPlot is vendored in `frontend/` with its licence and a SHA-256 table in
+[`VENDOR.md`](../custom_components/thermal_model/frontend/VENDOR.md); the version is
+declared once, in `thermal-model-chart.mjs`, and a test checks the two agree.
 
 ### What it draws
 
@@ -24,9 +39,11 @@ One time axis, last 48 h and next 48 h:
 - the **forecasts issued ~6/12/24 h ago** (dashed, in their scenario's colour,
   listed in the caption), to compare with what actually happened;
 - the **outdoor** temperature, measured and forecast, toggleable;
-- a `maintenant` marker, a hover crosshair giving every visible value, a legend
-  where each series can be hidden, and live parameter chips (`a`, `c_s`, `d`, `k`)
-  with ± buttons that write to the number entities.
+- a `maintenant` marker (drawn as a uPlot plugin, since annotations are not core),
+  the built-in cursor legend giving every visible value under the pointer, a legend
+  that hides a series on click, drag-to-zoom with double-click to reset, and live
+  parameter chips (`a`, `c_s`, `d`, `k`) with ± buttons that write to the number
+  entities.
 
 ### How it degrades
 
@@ -86,14 +103,16 @@ cycle is written to a local SQLite file instead of being kept in memory.
 
 ## Tests that keep the frontends honest
 
-- `tests/test_panel.py` — the sidebar entry exists, the module is served with a JS
-  content type and `no-cache`, the served config carries the **real** entity ids,
-  path traversal is refused, unload removes the panel, the JS parses (`node --check`)
-  and has no external dependency.
-- `tests/js/panel_smoke.mjs` — runs the **real render path** in node against a
-  stubbed DOM and a fake `hass`, then asserts the SVG contains the measured line,
-  one path per scenario, the dashed archived runs, the "now" marker and the
-  parameter chips. It already caught a runtime bug `node --check` could not.
+- `tests/test_panel.py` — the sidebar entry exists, every frontend file is served
+  with a JS/CSS content type and `no-cache`, the served config carries the **real**
+  entity ids, path traversal is refused, unload removes the panel, the vendored
+  library has its licence and a version that matches the code, no remote URL
+  appears in the sources, and both modules parse (`node --check`).
+- `tests/js/chart_test.mjs` — the data layer, in node: axis alignment, a missing
+  sample staying `null` instead of `0 °C`, a six-hour hole in the recorder history
+  getting an axis marker so the line breaks instead of being drawn across, archived
+  runs placed 6 h ago rather than at now, dashes, per-series scales (outdoor must
+  not land on the indoor axis), and the y ranges.
 - `tests/test_dashboard.py` — parses the YAML dashboard and fails on any entity id,
   attribute or template reference that does not exist on a live entry.
 
