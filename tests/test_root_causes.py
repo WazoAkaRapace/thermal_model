@@ -53,3 +53,56 @@ def test_rows_become_points_whatever_the_unit() -> None:
     assert [p.value for p in points] == [20.5, 20.6]
     assert points[0].moment.year == 2026
     assert points[1].moment - points[0].moment == timedelta(hours=1)
+
+
+def test_the_raw_history_grid_is_aligned_on_the_hour() -> None:
+    """Statistics hours sit on :00; a grid built from "now" at :37 matches none.
+
+    Measured on a real installation as "0 heures communes entre l'intérieur et
+    l'extérieur" the moment the indoor sensor fell back to its raw history.
+    """
+    import homeassistant.components.recorder.history as recorder_history
+    from homeassistant.components.recorder.history import get_significant_states
+
+    from custom_components.thermal_model.sources.recorder import async_read_states
+
+    start = datetime(2026, 11, 5, 14, 37, 52, tzinfo=UTC)  # deliberately not aligned
+    end = datetime(2026, 11, 6, 14, 37, 52, tzinfo=UTC)
+
+    original = get_significant_states
+
+    def fake_states(hass, start_time, end_time, entity_ids, *args, **kwargs):
+        # states at odd minutes, like a real sensor
+        return {
+            "sensor.indoor": [
+                _FakeState(
+                    "sensor.indoor", f"{20 + i * 0.01:.2f}", start + timedelta(minutes=17 * i)
+                )
+                for i in range(100)
+            ]
+        }
+
+    recorder_history.get_significant_states = fake_states
+    try:
+        series = async_read_states(None, ["sensor.indoor"], start, end, 60)
+    finally:
+        recorder_history.get_significant_states = original
+
+    moments = [moment for moment, _value in series["sensor.indoor"].points]
+    assert moments, "the grid must have points"
+    assert all(moment.minute == 0 and moment.second == 0 for moment in moments), (
+        f"grid aligned on the hour, got {moments[:3]}"
+    )
+    # and it must actually match statistics-shaped hours
+    statistics_hours = {datetime(2026, 11, 6, h, 0, tzinfo=UTC) for h in range(24)}
+    assert statistics_hours & set(moments), "the grid must share hours with statistics"
+
+
+class _FakeState:
+    """What the recorder returns, minimally."""
+
+    def __init__(self, entity_id: str, state: str, last_updated: datetime) -> None:
+        self.entity_id = entity_id
+        self.state = state
+        self.last_updated = last_updated
+        self.attributes = {}

@@ -81,8 +81,11 @@ def async_read_states(
     import homeassistant.components.recorder.history as recorder_history
 
     step = timedelta(minutes=step_minutes)
-    start = start.astimezone(UTC)
-    end = end.astimezone(UTC)
+    # The grid must land on step boundaries: hourly statistics sit exactly on :00,
+    # and a grid starting "now" (14:37, 15:37, …) never matches one of them —
+    # measured as "0 heures communes entre l'intérieur et l'extérieur".
+    start = start.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    end = end.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
     steps = int((end - start) / step) + 1
 
     try:
@@ -137,6 +140,11 @@ async def async_collect(
     """Async wrapper: read the recorder in the executor."""
     end = datetime.now(UTC)
     start = end - timedelta(days=days)
+    # Align the grid on step boundaries: statistics hours sit exactly on :00, and a
+    # grid starting "now" (14:37, 15:37, …) never matches one of them — measured as
+    # "0 heures communes entre l'intérieur et l'extérieur" on a real installation.
+    end = end.replace(minute=0, second=0, microsecond=0)
+    start = start.replace(minute=0, second=0, microsecond=0)
     return await hass.async_add_executor_job(
         async_read_states, hass, list(entity_ids), start, end, step_minutes
     )
