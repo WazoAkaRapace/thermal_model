@@ -196,6 +196,20 @@ def test_the_panel_imports_the_chart_module() -> None:
     assert 'from "./thermal-model-chart.mjs"' in source
 
 
+def test_the_panel_does_not_repaint_on_every_hass_push() -> None:
+    """Flicker regression: HA pushes a new hass on every state change.
+
+    The panel must compare the states it uses by identity and coalesce renders into
+    one animation frame, otherwise it repaints thousands of times a minute.
+    """
+    script = Path(__file__).parent / "js" / "panel_update_test.mjs"
+    assert script.exists(), f"missing update test: {script}"
+    assert NODE is not None, "node is required"
+    result = subprocess.run([NODE, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "panel update tests: ok" in result.stdout
+
+
 def test_the_data_layer_passes_its_node_tests() -> None:
     """Alignment, gaps, dashes, scales and ranges, checked outside the browser."""
     assert CHART_TEST.exists(), f"missing chart test: {CHART_TEST}"

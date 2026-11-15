@@ -1,15 +1,19 @@
 /**
  * Thermal Model — sidebar panel.
  *
- * Several small charts, not one giant one. A single figure holding every series
- * (eleven of them, two y scales) cannot be read: the eye cannot match a dashed
- * line to its scenario, and the outdoor range drags the indoor range. Each panel
- * therefore answers one question, and they share the same time axis and the same
- * colours so they line up and a series is recognisable across panels. Their
- * cursors are synced, so hovering one shows the same instant everywhere.
+ * Several small charts, not one giant one: each panel answers one question, they
+ * share the same time axis and colours, and their cursors are synced.
  *
- * The chart itself is uPlot (vendored, MIT — see VENDOR.md). The data and panel
- * layout live in thermal-model-chart.mjs so they can be tested with node.
+ * Update contract (per the Home Assistant frontend docs, "The hass object"):
+ * a new `hass` object is pushed on EVERY state change, but unchanged parts keep
+ * their identity — so the panel compares the states it actually uses by reference
+ * and does nothing when they are the same. Renders are coalesced into one animation
+ * frame, text nodes are updated in place, and the charts only receive `setData`
+ * when the data really changed. Rendering everything on every push is what makes a
+ * panel flicker on a busy installation (~4000 entities here).
+ *
+ * The chart itself is uPlot (vendored, MIT — see VENDOR.md). Data, panel layout and
+ * timestamp parsing live in thermal-model-chart.mjs so they can be tested in node.
  */
 
 import {
@@ -28,8 +32,6 @@ const HISTORY_REFRESH_MS = 5 * 60 * 1000;
 const PAST_HOURS = 48;
 const FUTURE_HOURS = 48;
 const CURSOR_KEY = "thermal-model";
-// Fixed order: a chart must not jump position when the history arrives or when an
-// archived run appears.
 const PANEL_ORDER = ["indoor", "past", "outdoor"];
 
 const CSS = `
@@ -45,10 +47,10 @@ const CSS = `
   }
   h1 { font-size: 1.35rem; margin: 0 0 4px; font-weight: 500; color: var(--primary-text-color); }
   .sub { color: var(--secondary-text-color); font-size: 0.85rem; }
-  .panel-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .panel-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
   .panel-title { font-size: 0.98rem; font-weight: 600; color: var(--primary-text-color); }
   .panel-unit {
-    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em;
     color: var(--secondary-text-color); border: 1px solid var(--divider-color);
     border-radius: 999px; padding: 1px 7px;
   }
@@ -105,35 +107,69 @@ class ThermalModelPanel extends HTMLElement {
     this._historyTimer = null;
     this._loading = false;
     this._charts = new Map(); // panel id -> { chart, signature, target, observer }
+    this._cards = new Map();
     this._uplotPromise = null;
     this._shellBuilt = false;
-    this._lastX = [];
+    this._frame = null;
+    this._seenStates = new Map(); // entity id -> state object (identity comparison)
+    this._seenHistoryKey = null;
+    this._textCache = new Map();
   }
 
   set panel(panel) {
     this._panel = panel;
-    this._update();
+    this._scheduleRender(true);
   }
 
   set hass(hass) {
     this._hass = hass;
+    // Docs: a new hass is made on every change, unchanged parts keep identity.
+    // Repainting on every push is what makes a panel flicker on a busy instance.
+    const changed = this._collectChanges(hass);
+    if (!changed) return;
     if (!this._history && !this._loading) this._loadHistory();
-    this._update();
+    this._scheduleRender();
   }
 
   connectedCallback() {
     this._historyTimer = window.setInterval(() => this._loadHistory(), HISTORY_REFRESH_MS);
     this._loadHistory();
-    this._update();
+    this._scheduleRender(true);
   }
 
   disconnectedCallback() {
     if (this._historyTimer) window.clearInterval(this._historyTimer);
+    if (this._frame) window.cancelAnimationFrame(this._frame);
     for (const entry of this._charts.values()) {
       if (entry.observer) entry.observer.disconnect();
       if (entry.chart) entry.chart.destroy();
     }
     this._charts.clear();
+  }
+
+  // -- change detection ------------------------------------------------
+  _relevantIds() {
+    const config = this._config();
+    return [
+      ...(config.indoor_entity ? [config.indoor_entity] : []),
+      ...(config.source_outdoor_entity ? [config.source_outdoor_entity] : []),
+      ...Object.values(config.scenarios || {}),
+      ...Object.values(config.numbers || {}),
+    ];
+  }
+
+  /** True when one of the entities this panel shows actually changed. */
+  _collectChanges(hass) {
+    const states = (hass && hass.states) || {};
+    let changed = false;
+    for (const entityId of this._relevantIds()) {
+      const current = states[entityId];
+      if (this._seenStates.get(entityId) !== current) {
+        this._seenStates.set(entityId, current);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   // -- data -----------------------------------------------------------
@@ -180,7 +216,7 @@ class ThermalModelPanel extends HTMLElement {
       this._historyError = String((err && err.message) || err);
     } finally {
       this._loading = false;
-      this._update();
+      this._scheduleRender(true);
     }
   }
 
@@ -215,17 +251,32 @@ class ThermalModelPanel extends HTMLElement {
       </div>
       <div class="chart"></div>`;
     const rank = PANEL_ORDER.indexOf(panel.id);
-    const before = [...this._cards.entries()].find(
-      ([id]) => PANEL_ORDER.indexOf(id) > rank,
-    );
+    const before = [...this._cards.entries()].find(([id]) => PANEL_ORDER.indexOf(id) > rank);
     this._chartHost.insertBefore(card, before ? before[1] : null);
     this._cards.set(panel.id, card);
     return card;
   }
 
+  /** Signature of what the charts would draw: skip setData when it did not move. */
+  _dataSignature(x, panels) {
+    const reference = Object.values(this._forecasts())[0] || {};
+    return [
+      x.length,
+      x.length ? x[0] : 0,
+      x.length ? x[x.length - 1] : 0,
+      reference.issued_at || "",
+      (this._history && this._history.indoor && this._history.indoor.length) || 0,
+      panels.map((panel) => panel.series.map((entry) => entry.id).join(",")).join("|"),
+    ].join("§");
+  }
+
   async _renderPanels(x, panels) {
     if (!x.length || !panels.length) {
-      this._chartHost.innerHTML = `<div class="card"><div class="empty">Aucune donnée à afficher pour l'instant.</div></div>`;
+      if (this._charts.size === 0) {
+        this._setChartHost(
+          `<div class="card"><div class="empty">Aucune donnée à afficher pour l'instant.</div></div>`,
+        );
+      }
       return;
     }
     const measuredWidth = (this._chartHost && this._chartHost.clientWidth) || 0;
@@ -233,7 +284,6 @@ class ThermalModelPanel extends HTMLElement {
 
     const uPlot = await this._ensureUplot();
     const width = Math.max(320, measuredWidth || 900);
-    this._lastX = x;
 
     for (const panel of panels) {
       const card = this._panelCard(panel);
@@ -245,6 +295,7 @@ class ThermalModelPanel extends HTMLElement {
         if (state.observer) state.observer.disconnect();
         state.chart.destroy();
         this._charts.delete(panel.id);
+        target.innerHTML = "";
         state = undefined;
       }
 
@@ -285,7 +336,6 @@ class ThermalModelPanel extends HTMLElement {
           padding: [10, 10, 0, 0],
           legend: { show: true, live: true },
           cursor: {
-            // same key on every panel: the crosshair and the zoom follow each other
             sync: { key: CURSOR_KEY, setSeries: false },
             drag: { setScale: true, x: true, y: false, dist: 8 },
             focus: { prox: 30 },
@@ -374,8 +424,42 @@ class ThermalModelPanel extends HTMLElement {
     this._shellBuilt = true;
   }
 
+  /** Write a text node only when its content changed (no layout churn). */
+  _setText(node, key, value) {
+    if (!node) return;
+    if (this._textCache.get(key) === value) return;
+    this._textCache.set(key, value);
+    node.textContent = value;
+  }
+
+  _setHtml(node, key, value) {
+    if (!node) return;
+    if (this._textCache.get(key) === value) return;
+    this._textCache.set(key, value);
+    node.innerHTML = value;
+  }
+
+  _setChartHost(html) {
+    if (this._textCache.get("chartHost") === html) return;
+    this._textCache.set("chartHost", html);
+    this._chartHost.innerHTML = html;
+  }
+
+  _scheduleRender(force = false) {
+    if (force) this._textCache.clear();
+    if (this._frame) return;
+    const run = () => {
+      this._frame = null;
+      this._update().catch(() => {});
+    };
+    this._frame =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(run)
+        : setTimeout(run, 16);
+  }
+
   _update() {
-    if (!this._hass) return;
+    if (!this._hass) return Promise.resolve();
     if (!this._shellBuilt) this._buildShell();
 
     const config = this._config();
@@ -390,25 +474,42 @@ class ThermalModelPanel extends HTMLElement {
     });
     const summary = summarise({ data, forecasts, nowMs });
 
-    this._nodes.title.textContent = (this._panel && this._panel.title) || "Thermal Model";
-    this._nodes.engine.textContent = `· moteur uPlot ${UPLOT_VERSION}`;
-    this._nodes.now.textContent =
+    this._setText(this._nodes.title, "title", (this._panel && this._panel.title) || "Thermal Model");
+    this._setText(this._nodes.engine, "engine", `· moteur uPlot ${UPLOT_VERSION}`);
+    this._setText(
+      this._nodes.now,
+      "now",
       summary.current !== null && Number.isFinite(summary.current)
         ? `${summary.current.toFixed(1)} °C`
-        : "—";
-    this._nodes.min.textContent =
-      summary.minimum !== null ? `${summary.minimum.toFixed(1)} °C` : "—";
-    this._nodes.max.textContent =
-      summary.maximum !== null ? `${summary.maximum.toFixed(1)} °C` : "—";
-    this._nodes.issued.textContent = reference.issued_at
-      ? new Date(reference.issued_at).toLocaleTimeString(undefined, {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "—";
-    this._nodes.weather.textContent = reference.weather_model || "—";
-    this._nodes.badge.textContent = reference.stale ? "périmé" : "à jour";
-    this._nodes.badge.className = `badge ${reference.stale ? "warn" : "ok"}`;
+        : "—",
+    );
+    this._setText(
+      this._nodes.min,
+      "min",
+      summary.minimum !== null ? `${summary.minimum.toFixed(1)} °C` : "—",
+    );
+    this._setText(
+      this._nodes.max,
+      "max",
+      summary.maximum !== null ? `${summary.maximum.toFixed(1)} °C` : "—",
+    );
+    this._setText(
+      this._nodes.issued,
+      "issued",
+      reference.issued_at
+        ? new Date(reference.issued_at).toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "—",
+    );
+    this._setText(this._nodes.weather, "weather", reference.weather_model || "—");
+    this._setText(this._nodes.badge, "badge", reference.stale ? "périmé" : "à jour");
+    const badgeClass = `badge ${reference.stale ? "warn" : "ok"}`;
+    if (this._textCache.get("badgeClass") !== badgeClass) {
+      this._textCache.set("badgeClass", badgeClass);
+      this._nodes.badge.className = badgeClass;
+    }
 
     const banners = [];
     const missing = [];
@@ -443,50 +544,86 @@ class ThermalModelPanel extends HTMLElement {
          La courbe mesurée peut manquer (intégration « history » désactivée ?).</div>`,
       );
     }
-    this._nodes.banners.innerHTML = banners.join("");
+    this._setHtml(this._nodes.banners, "banners", banners.join(""));
 
     const archived = data.series.filter((entry) => entry.id.includes(ARCHIVED_PREFIX));
-    this._nodes.foot.textContent = [
-      "Trait plein : mesuré et prévu. Pointillés : prévisions émises plus tôt, à comparer avec le mesuré.",
-      archived.length
-        ? `prévisions passées : ${archived
-            .map((entry) => entry.label.split("il y a ")[1])
-            .join(", ")}`
-        : "aucune prévision passée archivée pour l'instant",
-      "survol et zoom synchronisés entre les graphiques, double-clic pour revenir",
-      `diagnostic : ${Object.keys(forecasts).length}/${scenarioEntries.length} scénario(s) · historique ${
-        (this._history && this._history.indoor && this._history.indoor.length) || 0
-      } point(s) · ${panels.length} graphique(s) · ${data.series.length} série(s) · largeur ${
-        this._chartHost ? this._chartHost.clientWidth : 0
-      }px`,
-    ].join(" · ");
+    this._setText(
+      this._nodes.foot,
+      "foot",
+      [
+        "Trait plein : mesuré et prévu. Pointillés : prévisions émises plus tôt, à comparer avec le mesuré.",
+        archived.length
+          ? `prévisions passées : ${archived
+              .map((entry) => entry.label.split("il y a ")[1])
+              .join(", ")}`
+          : "aucune prévision passée archivée pour l'instant",
+        "survol et zoom synchronisés entre les graphiques, double-clic pour revenir",
+        `diagnostic : ${Object.keys(forecasts).length}/${scenarioEntries.length} scénario(s) · historique ${
+          (this._history && this._history.indoor && this._history.indoor.length) || 0
+        } point(s) · ${panels.length} graphique(s) · ${data.series.length} série(s) · largeur ${
+          this._chartHost ? this._chartHost.clientWidth : 0
+        }px`,
+      ].join(" · "),
+    );
 
-    this._nodes.paramsInfo.innerHTML = `Paramètres du modèle — source : <strong>${escapeHtml(
-      reference.params_source || "—",
-    )}</strong> · empreinte <code>${escapeHtml(reference.params_digest || "—")}</code>`;
-    this._nodes.params.innerHTML = Object.entries(PARAM_LABELS)
-      .filter(([key]) => config.numbers && config.numbers[key])
-      .map(([key, label]) => {
-        const state = this._hass.states[config.numbers[key]];
-        const value = state ? Number.parseFloat(state.state) : NaN;
-        return `<div class="param">
-            <span class="name">${label}</span>
-            <button data-number="${key}" data-dir="down" aria-label="diminuer">−</button>
-            <span class="val">${Number.isFinite(value) ? value.toFixed(key === "c_s" ? 4 : 3) : "—"}</span>
-            <button data-number="${key}" data-dir="up" aria-label="augmenter">+</button>
-          </div>`;
-      })
-      .join("");
-    for (const button of this._nodes.params.querySelectorAll("[data-number]")) {
-      button.addEventListener("click", () =>
-        this._nudge(button.dataset.number, button.dataset.dir),
-      );
+    this._setHtml(
+      this._nodes.paramsInfo,
+      "paramsInfo",
+      `Paramètres du modèle — source : <strong>${escapeHtml(
+        reference.params_source || "—",
+      )}</strong> · empreinte <code>${escapeHtml(reference.params_digest || "—")}</code>`,
+    );
+    this._renderParams(config);
+
+    const signature = this._dataSignature(x, panels);
+    if (this._textCache.get("chartSignature") !== signature) {
+      this._textCache.set("chartSignature", signature);
+      return this._renderPanels(x, panels).catch((err) => {
+        this._setChartHost(
+          `<div class="card"><div class="empty">Graphiques indisponibles :
+            ${escapeHtml((err && err.message) || err)}</div></div>`,
+        );
+      });
     }
+    return Promise.resolve();
+  }
 
-    this._renderPanels(x, panels).catch((err) => {
-      this._chartHost.innerHTML = `<div class="card"><div class="empty">Graphiques indisponibles :
-        ${escapeHtml((err && err.message) || err)}</div></div>`;
-    });
+  /** Chips are built once; only the numbers are refreshed afterwards. */
+  _renderParams(config) {
+    const keys = Object.keys(PARAM_LABELS).filter(
+      (key) => config.numbers && config.numbers[key],
+    );
+    const signature = keys.join(",");
+    if (this._textCache.get("paramKeys") !== signature || !this._nodes.params.childElementCount) {
+      this._textCache.set("paramKeys", signature);
+      this._nodes.params.innerHTML = keys
+        .map(
+          (key) => `<div class="param" data-key="${key}">
+            <span class="name">${PARAM_LABELS[key]}</span>
+            <button data-number="${key}" data-dir="down" aria-label="diminuer">−</button>
+            <span class="val" data-val="${key}">—</span>
+            <button data-number="${key}" data-dir="up" aria-label="augmenter">+</button>
+          </div>`,
+        )
+        .join("");
+      for (const button of this._nodes.params.querySelectorAll("[data-number]")) {
+        button.addEventListener("click", () =>
+          this._nudge(button.dataset.number, button.dataset.dir),
+        );
+      }
+    }
+    for (const key of keys) {
+      const state = this._hass.states[config.numbers[key]];
+      const value = state ? Number.parseFloat(state.state) : NaN;
+      const field = this._nodes.params.querySelector(`[data-val="${key}"]`);
+      if (field) {
+        this._setText(
+          field,
+          `param:${key}`,
+          Number.isFinite(value) ? value.toFixed(key === "c_s" ? 4 : 3) : "—",
+        );
+      }
+    }
   }
 
   _nudge(key, direction) {

@@ -68,6 +68,9 @@ RETRY_INTERVAL = timedelta(minutes=2)
 # near-identical curves; these are the ages that actually test the model.
 ARCHIVE_AGES_HOURS = (6.0, 12.0, 24.0)
 ARCHIVE_TOLERANCE_HOURS = 2.5
+# While the archive is young, keep runs at least this far apart so the comparison
+# curves are actually distinguishable.
+MIN_ARCHIVE_SEPARATION_SECONDS = 45 * 60
 LIVE_REFRESH_COOLDOWN = timedelta(minutes=2)
 
 
