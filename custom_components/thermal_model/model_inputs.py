@@ -374,7 +374,10 @@ async def build_inputs(
         if finished is not None:
             inputs.heating_kw = values
             inputs.heating_power_sensor = candidate
-            return inputs, finished
+            # `finished` is a ThermalParams: wrap it, the caller expects an
+            # IdentificationResult (this exact omission crashed the button on the
+            # real installation: "'ThermalParams' object has no attribute 'params'")
+            return inputs, replace(result, params=finished)
         if daily is not None and daily.message:
             inputs.reasons.append(daily.message)
         inputs.reasons.extend(failures[:3])

@@ -362,3 +362,57 @@ async def test_the_bound_sensor_is_read_from_raw_history_when_it_has_no_statisti
         "the bound sensor must be used, not replaced by a mean of every thermometer"
     )
     assert any("historique brut" in str(note) for note in identification["notes"])
+
+
+async def test_daily_k_finishing_an_hourly_fit_returns_an_identification_result(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k from the daily balance must arrive wrapped, not as a bare ThermalParams.
+
+    The button crashed on the real installation with "'ThermalParams' object has no
+    attribute 'params'": the path "hourly fit without k, finished by the daily
+    balance" returned the parameters directly.
+    """
+    import custom_components.thermal_model.model_inputs as mi
+    from custom_components.thermal_model.core.identify import (
+        Identifiability,
+        IdentificationResult,
+    )
+    from custom_components.thermal_model.core.simulate import ThermalParams
+
+    setup_entry.runtime_data.options["heating_power_sensor"] = PAC
+
+    def fake_identify(times, tin, tout, solar, heating, settings=None):
+        return IdentificationResult(
+            params=ThermalParams(a=0.02, c_s=0.001, d=0.015, k=None),
+            identifiability=Identifiability.CONSTRAINED,
+            driving_spread=0.3,
+            rmse_observed=1.0,
+            rmse_free_float=1.5,
+            coverage=1.0,
+        )
+
+    monkeypatch.setattr(mi, "identify", fake_identify)
+    monkeypatch.setattr(mi, "_energy_sensor_for", lambda hass_, power: "sensor.pac_energy")
+
+    data = statistics_reader
+    data["sensor.pac_energy"] = {
+        moment: (2.0 if data[PAC][moment] > 1000 else 0.0) for moment in data[PAC]
+    }
+
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.home_recalculate_model"}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("number.home_wall_loss_a")
+    identification = state.attributes["identification"]
+    assert state.attributes["params_source"] == "identified", json.dumps(identification, indent=1)
+    assert identification["k_days"] > 0
+    assert identification["energy_sensor"] == "sensor.pac_energy"
+    assert float(hass.states.get("number.home_heating_gain_k").state) > 0
