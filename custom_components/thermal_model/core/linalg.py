@@ -17,8 +17,12 @@ from dataclasses import dataclass
 __all__ = [
     "LeastSquaresResult",
     "SingularMatrixError",
+    "instrumental_variables",
+    "invert",
     "least_squares",
+    "matmul",
     "solve",
+    "transpose",
 ]
 
 
@@ -92,6 +96,93 @@ def invert(matrix: Sequence[Sequence[float]]) -> list[list[float]]:
         for column in range(size)
     ]
     return [[columns[column][row] for column in range(size)] for row in range(size)]
+
+
+def transpose(matrix: Sequence[Sequence[float]]) -> list[list[float]]:
+    """Transpose a (small) matrix."""
+    if not matrix:
+        return []
+    return [[row[column] for row in matrix] for column in range(len(matrix[0]))]
+
+
+def matmul(left: Sequence[Sequence[float]], right: Sequence[Sequence[float]]) -> list[list[float]]:
+    """Multiply two small matrices."""
+    product: list[list[float]] = []
+    for row in left:
+        product.append(
+            [
+                sum(value * other for value, other in zip(row, column, strict=True))
+                for column in zip(*right, strict=True)
+            ]
+        )
+    return product
+
+
+def instrumental_variables(
+    rows: Sequence[Sequence[float]],
+    instruments: Sequence[Sequence[float]],
+    targets: Sequence[float],
+) -> LeastSquaresResult:
+    """Two-stage least squares: fit ``y = X β`` using ``Z`` as instruments.
+
+    The estimator is ``β = (ZᵀX)⁻¹ Zᵀy``. It exists for one reason: when the
+    regressor and the target are built from the *same* noisy measurement, plain
+    least squares is biased (errors in variables). A lagged copy of the regressor
+    is correlated with the true value but not with the current measurement noise,
+    which removes that bias. It does **not** create information: if the regressor
+    barely varies, the variance stays large and the standard errors will say so.
+    """
+    if not rows or not instruments:
+        raise ValueError("no observations to fit")
+    if len(rows) != len(targets) or len(instruments) != len(targets):
+        raise ValueError("rows, instruments and targets must have the same length")
+
+    z_matrix = [list(row) for row in instruments]
+    x_matrix = [list(row) for row in rows]
+    n_params = len(x_matrix[0])
+
+    zt = transpose(z_matrix)
+    ztx = matmul(zt, x_matrix)
+    zty = [
+        sum(value * target for value, target in zip(column, targets, strict=True)) for column in zt
+    ]
+
+    params = solve(ztx, zty)
+
+    residuals = [
+        target - sum(coef * value for coef, value in zip(params, row, strict=True))
+        for row, target in zip(x_matrix, targets, strict=True)
+    ]
+    rss = sum(residual * residual for residual in residuals)
+
+    mean = sum(targets) / len(targets)
+    tss = sum((target - mean) ** 2 for target in targets)
+    r_squared = None if tss == 0.0 else 1.0 - rss / tss
+
+    stderr: tuple[float | None, ...]
+    if len(targets) > n_params:
+        ztz = matmul(zt, z_matrix)
+        sigma2 = rss / (len(targets) - n_params)
+        try:
+            ztx_inverse = invert(ztx)
+            covariance = matmul(matmul(ztx_inverse, ztz), transpose(ztx_inverse))
+            # the covariance of an IV estimator is sigma²·(ZᵀX)⁻¹ZᵀZ(XᵀZ)⁻¹
+            stderr = tuple(
+                math.sqrt(sigma2 * covariance[i][i]) if covariance[i][i] > 0 else None
+                for i in range(n_params)
+            )
+        except (SingularMatrixError, ValueError):
+            stderr = tuple(None for _ in params)
+    else:
+        stderr = tuple(None for _ in params)
+
+    return LeastSquaresResult(
+        params=tuple(params),
+        stderr=stderr,
+        n_observations=len(targets),
+        residual_sum_squares=rss,
+        r_squared=r_squared,
+    )
 
 
 def least_squares(

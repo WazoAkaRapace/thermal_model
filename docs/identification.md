@@ -34,24 +34,55 @@ slope. Measured on synthetic data (a = 0.0065 /h, σ = 0.1 K):
 
 ## The estimator actually used
 
-1. Work on the **hourly rollup**, never the raw 15-min series.
-2. **Smooth** the indoor temperature (centred moving average, `smooth_hours`, default 2 h) *before*
-   any differencing.
-3. **Overlapping 1-h differences** with a **window-matched regressor** — the exact discretisation of
-   `ΔT = −a·∫(T−Text)dt + d·Δt`:
+1. Work on the hourly window, never a single raw sample: overlapping 1-hour
+   differences, with the driving term summed over the **steps** of the window
+   (left endpoints only — using the mean of `span+1` points shifts the regressor
+   and biases `a` by ~7 % on a pure Euler signal).
+2. **No smoothing by default.** Smoothing was the intuitive fix for measurement
+   noise, but it biases the slope of a curved signal. Measured on synthetic
+   houses: 2 h smoothing gives +10 % on a noise-free 30-day house and −12 % on a
+   90-day noisy one, while no smoothing gives +1 % and 0 %. The setting still
+   exists for very noisy sensors.
+3. **Instrumental variables** instead of plain least squares. The instrument is
+   the *lagged* driving mean: correlated with the true driving temperature,
+   uncorrelated with the noise of the current window. Plain least squares is
+   biased here (errors in variables), by +60 % to +200 % depending on the lag.
 
    ```
-   y[k] = (T[k+L] − T[k]) / L          with L = 1 h
-   x[k] = mean(T − Text over [k, k+L])  — never the start point
+   y[k]  = (T[k+L] − T[k]) / L                  # observed decay
+   x[k]  = mean(T − Text over the L steps)      # driving term
+   z[k]  = same mean over the previous window   # instrument
+   β     = (ZᵀX)⁻¹ Zᵀy                          # → a = β₀, d = β₁
    ```
-4. Masks: heating steps (`P > 0`), the **post-heating grace period** (`tau_grace_minutes`, 30 min
-   default — 2–3 h for a floor heating system), and outliers above `outlier_threshold` K/h.
-5. `a` and `d` on **low-solar passive hours** (`S < 10 W/m²`, day *and* night). If `SE(a) > 30 %`,
-   widen to `S < 50 W/m²`, then fall back to a joint passive fit — the choice is decided by
-   synthetic tests, not by taste.
-6. `c_s` on daylight passive hours with `a` and `d` **held fixed** (a joint fit is degenerate).
-7. **A standard error is published for every parameter.** It is the only honest way to say "this
-   number is solid" or "this number is noise".
+4. Masks: heating steps (`P > 0`), the **post-heating grace period**
+   (`tau_grace_minutes`, 30 min default — 2–3 h for a floor heating system), and
+   outliers above `outlier_threshold` K/h.
+5. `a` and `d` on **low-solar passive hours** (`S < 10 W/m²`).
+6. `c_s` on daylight passive hours with `a` and `d` **held fixed** (a joint fit is
+   degenerate).
+7. **A standard error is published for every parameter.**
+
+## Two degeneracies, two different defences
+
+**`(a, d)` trade off when the driving range is narrow.** If the outdoor
+temperature barely moves, `y ≈ −a·x̄ + d` fits almost any `a`: the residuals stay
+tiny, so the standard error looks reassuring while the extrapolation is wrong.
+This is measured, not theoretical:
+
+| data | relative spread of `T − Text` | error on `a` |
+|---|---|---|
+| 90 d with a seasonal trend | 0.12 | ~0 % |
+| 60 d with a seasonal trend | 0.09 | +2 % |
+| 30 d, flat outdoor temperature | 0.03 | **+41 %** |
+
+So `driving_spread = σ(T−Text)/|mean|` is computed and published, and below
+`min_driving_spread` (0.08) the result is marked **`constrained`** even when its
+standard error is small. `constrained` means "the model predicts your house, but
+you cannot claim to know how much of the decay is loss and how much is internal
+gain" — which is the honest statement for a few weeks of autumn data.
+
+**`k` is endogenous in a heated house.** See below.
+
 
 ## Why `k` is special
 
