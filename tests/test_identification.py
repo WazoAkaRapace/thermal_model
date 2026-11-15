@@ -384,3 +384,46 @@ async def test_the_power_meter_can_be_chosen_by_the_user(
     assert identification["heating_power_sensor"] == OTHER, (
         "an explicit choice must win over auto-detection"
     )
+
+
+async def test_a_kwh_counter_alone_identifies_the_whole_model(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+) -> None:
+    """No power meter at all — only a kWh counter, which is what a radiator house has.
+
+    The hourly fit cannot separate the wall loss from the heating when the heating is
+    never observed. Three weeks of daily balances can: four coefficients, one equation
+    per day.
+    """
+    from tests.unit.test_detection import _house
+
+    house = _house(days=21)
+    moments = house["times"]
+    setup_entry.runtime_data.selected_power_sensor = "sensor.pac_energy"
+    hass.states.async_set(
+        "sensor.pac_energy",
+        "0",
+        {"device_class": "energy", "unit_of_measurement": "kWh", "state_class": "total"},
+    )
+    statistics_reader[INDOOR] = dict(zip(moments, house["tin"], strict=True))
+    statistics_reader[OUTDOOR] = dict(zip(moments, house["tout"], strict=True))
+    statistics_reader["sensor.pac_energy"] = dict(zip(moments, house["energy"], strict=True))
+
+    await setup_entry.runtime_data.coordinator.async_identify()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("number.home_wall_loss_a")
+    identification = state.attributes["identification"]
+    assert state.attributes["params_source"] == "identified", json.dumps(identification, indent=1)
+    assert identification["k_source"] == "daily_model"
+    assert identification["energy_sensor"] == "sensor.pac_energy"
+    assert identification["k_days"] >= 12
+    assert identification["k_energy_kwh"] > 100
+
+    # the four coefficients must land near the house that generated the data
+    assert abs(float(hass.states.get("number.home_heating_gain_k").state) - 0.30) < 0.1
+    assert 0.005 < float(state.state) < 0.06

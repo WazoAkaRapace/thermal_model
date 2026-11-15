@@ -147,6 +147,34 @@ async def async_identify_model(
     # Publish the candidates so the select entity can offer them.
     runtime.power_options = list(inputs.power_options)
     notes = tuple(inputs.reasons)
+    daily_model = inputs.daily_model
+    if daily_model is not None and daily_model.ok and daily_model.params is not None:
+        # No power meter at all: the four coefficients come from the daily balance.
+        _LOGGER.info(
+            "Thermal Model: daily model a=%.5f c_s=%.5f d=%+.4f k=%.3f on %s days",
+            daily_model.params.a,
+            daily_model.params.c_s,
+            daily_model.params.d,
+            daily_model.params.k or 0.0,
+            daily_model.days,
+        )
+        return IdentificationOutcome(
+            params=daily_model.params,
+            identifiability=Identifiability.IDENTIFIED,
+            coverage=1.0,
+            samples=len(inputs.times),
+            days=daily_model.days,
+            k_source="daily_model",
+            energy_sensor=inputs.energy_sensor,
+            k_stderr=daily_model.stderrs[3] if len(daily_model.stderrs) > 3 else None,
+            k_days=daily_model.days,
+            k_energy_kwh=daily_model.total_kwh,
+            identified_at=datetime.now(UTC),
+            indoor_sources=tuple(inputs.indoor_sources),
+            solar_source=inputs.solar_source,
+            notes=notes,
+        )
+
     if result is None:
         return IdentificationOutcome(
             message="; ".join(notes) or "identification impossible",

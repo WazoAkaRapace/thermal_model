@@ -34,7 +34,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .core.daily_k import DailyKResult, identify_k_from_daily_energy
+from .core.daily_k import (
+    DailyKResult,
+    DailyModelResult,
+    fit_daily_model,
+    identify_k_from_daily_energy,
+)
 from .core.identify import IdentificationError, IdentificationSettings, identify
 from .sources import WeatherError, fetch_past_weather
 from .sources.statistics import StatisticPoint, async_read_statistics
@@ -87,6 +92,7 @@ class ModelInputs:
     power_options: list[str] = field(default_factory=list)
     energy_sensor: str | None = None
     daily_k: DailyKResult | None = None
+    daily_model: DailyModelResult | None = None
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -423,7 +429,21 @@ async def build_inputs(
     # round trips for a job that runs daily.
     every_series = await async_read_statistics(hass, power_options, days) if power_options else {}
     every_points = _points(every_series)
+    energy_options: list[str] = []
     for candidate in power_options:
+        candidate_state = hass.states.get(candidate)
+        candidate_unit = (
+            str(candidate_state.attributes.get("unit_of_measurement") or "")
+            if candidate_state is not None
+            else ""
+        )
+        if (
+            candidate_state is not None
+            and candidate_state.attributes.get("device_class") == "energy"
+        ) or candidate_unit in ("kWh", "Wh"):
+            energy_options.append(candidate)
+
+    for candidate in [option for option in power_options if option not in energy_options]:
         points = every_points.get(candidate) or {}
         if len(points) < len(hours) * 0.6:
             failures.append(f"{candidate}: historique trop court")
@@ -474,6 +494,27 @@ async def build_inputs(
         inputs.reasons.extend(failures[:3])
         return inputs, None
 
+    if best is None and energy_options and best_without_k is None:
+        # Only a kWh counter is available: fit the four coefficients on the daily
+        # balance. The hourly fit cannot separate the wall loss from the heating when
+        # the heating is never observed, the days can.
+        energy_sensor = energy_options[0]
+        series = await async_read_statistics(hass, [energy_sensor], days)
+        points = _points(series).get(energy_sensor) or {}
+        state = hass.states.get(energy_sensor)
+        unit = str(state.attributes.get("unit_of_measurement") or "") if state else ""
+        scale = 0.001 if unit == "Wh" else 1.0
+        energy = [points.get(hour, 0.0) * scale for hour in hours]
+        daily_model = fit_daily_model(hours, tin, tout, solar, energy, dt_hours=1.0)
+        inputs.daily_model = daily_model
+        inputs.energy_sensor = energy_sensor
+        if daily_model.ok and daily_model.params is not None:
+            inputs.heating_kw = [0.0] * len(hours)
+            return inputs, None
+        if daily_model.message:
+            inputs.reasons.append(daily_model.message)
+        return inputs, None
+
     if best is None:
         if power_options:
             inputs.reasons.append(
@@ -519,6 +560,12 @@ def _energy_sensor_for(hass: HomeAssistant, power_sensor: str) -> str | None:
     exposes energy in kWh on the same device — and kWh per day is exactly what the
     daily balance needs.
     """
+    state = hass.states.get(power_sensor)
+    if state is not None:
+        unit = str(state.attributes.get("unit_of_measurement") or "")
+        if state.attributes.get("device_class") == "energy" or unit in ("kWh", "Wh"):
+            return power_sensor  # the user pointed at the kWh counter itself
+
     registry = er.async_get(hass)
     meter = registry.async_get(power_sensor)
     device_id = getattr(meter, "device_id", None)
@@ -534,13 +581,14 @@ def _energy_sensor_for(hass: HomeAssistant, power_sensor: str) -> str | None:
             candidates.append(entry.entity_id)
     if not candidates:
         return None
+
     # prefer kWh over Wh so the numbers stay readable, then alphabetical for determinism
-    candidates.sort(
-        key=lambda entity_id: (
-            str(hass.states[entity_id].attributes.get("unit_of_measurement")) == "Wh",
-            entity_id,
-        )
-    )
+    def _kwh_first(entity_id: str) -> tuple[bool, str]:
+        state = hass.states.get(entity_id)
+        unit = str(state.attributes.get("unit_of_measurement")) if state is not None else ""
+        return (unit == "Wh", entity_id)  # kWh before Wh, then alphabetical
+
+    candidates.sort(key=_kwh_first)
     return candidates[0]
 
 
