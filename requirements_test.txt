@@ -1,7 +1,13 @@
-# Test/runtime tooling for the Thermal Model integration.
+# Test/lint tooling for the Thermal Model integration.
 # The integration itself has ZERO runtime requirements (no numpy, no scipy):
-# this file is only about the development and CI environment.
+# this file only describes the development and CI environment.
+#
+# Python 3.14 is required (not 3.13): the newest
+# pytest-homeassistant-custom-component releases require it, and they are the
+# only way to test against the Home Assistant version people actually run
+# (2026.11 line). Testing against an older harness while declaring a newer
+# minimum in hacs.json would be a lie.
 pytest>=8.0
 pytest-asyncio>=0.24
-pytest-homeassistant-custom-component>=0.13.200
+pytest-homeassistant-custom-component>=0.13.375
 ruff>=0.7

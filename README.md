@@ -67,14 +67,17 @@ diagnostics and the reasons a parameter can honestly come back as `unknown` are 
 ## Development
 
 ```bash
-python3 -m venv .venv
+python3.14 -m venv .venv          # Python 3.14 or use: uv venv --python 3.14 .venv
 .venv/bin/pip install -r requirements_test.txt
 .venv/bin/python -m pytest -q          # test suite
 .venv/bin/ruff check .                 # lint
 ```
 
 The suite runs against a real Home Assistant test harness
-(`pytest-homeassistant-custom-component`), not mocks of it.
+(`pytest-homeassistant-custom-component`), not mocks of it. It is pinned to the
+Home Assistant version people actually run — currently **2026.10.4** — which is
+also the minimum declared in `hacs.json`: a newer minimum could not be honestly
+claimed without testing it.
 
 ## Licence
 
