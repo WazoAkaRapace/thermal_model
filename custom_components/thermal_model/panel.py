@@ -55,11 +55,20 @@ _ALLOWED_SUFFIXES = {".js", ".mjs", ".css", ".svg", ".png"}
 
 
 class PanelFilesView(HomeAssistantView):
-    """Serve the panel's static files, authenticated and cache-safe."""
+    """Serve the panel's static files, cache-safe.
+
+    ``requires_auth = False`` on purpose: the frontend loads a panel module with a
+    plain ``import()``, which carries no bearer token (Home Assistant keeps its
+    tokens in localStorage, not in a cookie), so an authenticated view answers 401
+    and the browser reports "Unable to load custom panel". These files hold no user
+    data — the panel reads every value over the authenticated websocket — so
+    serving them like Home Assistant serves ``/frontend_latest/*`` is the correct
+    trade.
+    """
 
     url = VIEW_URL
     name = VIEW_NAME
-    requires_auth = True
+    requires_auth = False
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory

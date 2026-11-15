@@ -116,13 +116,36 @@ async def test_every_frontend_file_is_served_as_javascript(
     assert "text/css" in css.headers["Content-Type"]
 
 
+async def test_the_module_is_reachable_without_a_token(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client_no_auth: Any
+) -> None:
+    """Regression: the frontend imports the module with no bearer token.
+
+    An authenticated view answers 401 here and Home Assistant shows "Unable to load
+    custom panel", which is exactly how this broke the first time on a real
+    installation. The module must be fetchable like ``/frontend_latest/*``.
+    """
+    module_url = (_panel_config(hass)["_panel_custom"])["module_url"]
+    base = module_url.rsplit("/", 1)[0]
+    client = await hass_client_no_auth()
+
+    for name in (
+        f"{panel_module.WEBCOMPONENT_NAME}.js",
+        "thermal-model-chart.mjs",
+        "uplot.min.js",
+        "uplot.min.css",
+    ):
+        response = await client.get(f"{base}/{name}")
+        assert response.status == 200, f"{name} is not reachable without a token"
+
+
 async def test_the_view_refuses_unknown_files(
-    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client: Any
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_client_no_auth: Any
 ) -> None:
     """No traversal, no serving arbitrary files out of the package."""
-    client = await hass_client()
+    client = await hass_client_no_auth()
 
-    for name in ("../__init__.py", "missing.js", "manifest.json", "panel.py"):
+    for name in ("../__init__.py", "missing.js", "manifest.json", "panel.py", "uplot.LICENSE"):
         response = await client.get(f"/{DOMAIN_KEY}/frontend/1.0.0/{name}")
         assert response.status == 404, name
 
