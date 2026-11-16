@@ -369,6 +369,47 @@ async def test_the_bound_sensor_is_read_from_raw_history_when_it_has_no_statisti
     assert any("historique brut" in str(note) for note in identification["notes"])
 
 
+async def test_short_statistics_do_not_mask_ten_days_of_raw_history(
+    hass: HomeAssistant,
+    temperature_entities: None,
+    power_states: None,
+    setup_entry: MockConfigEntry,
+    statistics_reader: dict[str, dict[datetime, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day after ``state_class`` is added, statistics exist but are short.
+
+    20 hours of statistics must not hide 240 hours of raw history: measured on
+    the real installation as "n'a pas assez d'historique (minimum 5 jours)"
+    while the recorder held ten days of the bound sensor.
+    """
+    data = statistics_reader
+    indoor_series = data.pop("sensor.indoor_temperature")
+    points = sorted(indoor_series.items())
+    # the sensor just gained state_class: statistics cover only the last day
+    data["sensor.indoor_temperature"] = dict(points[-20:])
+
+    setup_entry.runtime_data.options["heating_power_sensor"] = PAC
+    import custom_components.thermal_model.model_inputs as mi
+
+    async def fake_series_for(hass_, sensor, days):
+        if sensor == "sensor.indoor_temperature":
+            return dict(points)
+        return statistics_reader.get(sensor) or {}
+
+    monkeypatch.setattr(mi, "_series_for_sensor", fake_series_for)
+
+    await setup_entry.runtime_data.coordinator.async_identify()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("number.home_wall_loss_a")
+    identification = state.attributes["identification"]
+    assert state.attributes["params_source"] == "identified", identification
+    assert any("fusionné" in str(note) for note in identification["notes"]), (
+        "the raw history must be merged in, not masked by short statistics"
+    )
+
+
 async def test_daily_k_finishing_an_hourly_fit_returns_an_identification_result(
     hass: HomeAssistant,
     temperature_entities: None,

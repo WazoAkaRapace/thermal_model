@@ -222,22 +222,31 @@ async def build_inputs(
     first_pass = await async_read_statistics(hass, sorted(probe_ids), days)
     first_points = _points(first_pass)
     outdoor_points = first_points.get(outdoor_sensor) or {}
+    if len(outdoor_points) < 24 * MIN_INDOOR_DAYS:
+        # the bound outdoor sensor may lack state_class, or have just gained it
+        raw_outdoor = await _series_for_sensor(hass, outdoor_sensor, days)
+        if raw_outdoor and len(raw_outdoor) > len(outdoor_points):
+            outdoor_points = {**raw_outdoor, **outdoor_points}
+            inputs.reasons.append(
+                f"{outdoor_sensor}: statistiques trop courtes, historique brut fusionné"
+            )
     if not outdoor_points:
-        # the bound outdoor sensor may lack state_class too
-        outdoor_points = await _series_for_sensor(hass, outdoor_sensor, days)
-        if not outdoor_points:
-            inputs.reasons.append(f"aucune statistique ni aucun historique pour {outdoor_sensor}")
-            return inputs, None
-        inputs.reasons.append(f"{outdoor_sensor}: pas de statistiques, historique brut utilisé")
+        inputs.reasons.append(f"aucune statistique ni aucun historique pour {outdoor_sensor}")
+        return inputs, None
 
     indoor_points = first_points.get(indoor_sensor) or {}
-    if not indoor_points:
+    # Statistics win only when they are actually the longer record. A sensor that
+    # just gained ``state_class`` serves ~20 hours of statistics that would mask
+    # ten days of raw history — measured on the real installation the day after
+    # the fix: "n'a pas assez d'historique" while the recorder held 240 hours.
+    if len(indoor_points) < 24 * MIN_INDOOR_DAYS:
         raw_indoor = await _series_for_sensor(hass, indoor_sensor, days)
-        if len(raw_indoor) >= 24 * MIN_INDOOR_DAYS:
-            indoor_points = raw_indoor
+        if raw_indoor and len(raw_indoor) > len(indoor_points):
+            indoor_points = {**raw_indoor, **indoor_points}
+            stats_hours = len(first_points.get(indoor_sensor) or {})
             inputs.reasons.append(
-                f"{indoor_sensor}: pas de statistiques (state_class manquant ?), "
-                "historique brut utilisé"
+                f"{indoor_sensor}: statistiques trop courtes ({stats_hours} h), "
+                "historique brut fusionné"
             )
     indoor_sources: list[str] = []
     indoor_series: dict[str, dict[datetime, float]] = {}
