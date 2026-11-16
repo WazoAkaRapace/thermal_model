@@ -112,3 +112,40 @@ def test_the_observed_rates_need_no_model() -> None:
     assert sum(night) / len(night) < -0.05, "nights cool down without heating"
     assert sum(midday) / len(midday) > 0.1, "midday warms up on solar alone"
     _ = datetime.now(UTC)  # timedelta imported for the module's other users
+
+
+def test_lying_hours_are_trimmed_not_absorbed() -> None:
+    """A sun patch on the sensor's wall must be dropped, not averaged in.
+
+    On the real installation a handful of such hours made one day's solar
+    response look 20x stronger than the next; the robust fit removes them and
+    says how many went.
+    """
+    house = _dual_service_house(days=28)
+    tin = list(house["tin"])
+    meter = list(house["meter"])
+    # vingt heures mensongères, isolées comme des taches de soleil sur le mur
+    # du capteur : la lecture grimpe puis rend, la maison n'a rien reçu
+    injected = 0
+    index = 0
+    while injected < 20 and index < len(tin) - 2:
+        hour = index % 24
+        if (
+            9 <= hour <= 16
+            and meter[index] == 0.0
+            and meter[index + 1] == 0.0
+            and meter[index + 2] == 0.0
+        ):
+            tin[index + 1] += 0.9
+            injected += 1
+            index += 24
+        else:
+            index += 1
+    assert injected == 20
+    fit = fit_passive(tin, house["tout"], house["solar"], meter)
+
+    assert fit.ok, fit.message
+    assert fit.trimmed >= 15, f"{fit.trimmed} heures écartées, il en faudrait ~20"
+    assert abs(fit.a - A_TRUE) < 0.003, f"a = {fit.a}"
+    assert abs(fit.d - D_TRUE) < 0.02, f"d = {fit.d}"
+    assert fit.c_s > 0.5 * C_S_TRUE

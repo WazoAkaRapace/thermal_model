@@ -48,6 +48,7 @@ class PassiveFit:
     d: float
     stderrs: tuple[float | None, ...] = ()
     steps: int = 0
+    trimmed: int = 0
     rmse_k_per_h: float | None = None
     message: str | None = None
 
@@ -113,7 +114,36 @@ def fit_passive(
             ),
         )
 
+    # Robust fit: a sun patch on the sensor's wall, a shower, a stray heat
+    # source — a few hours lie, and on the real installation they were what
+    # made one day's solar response look 20× stronger than the next. Iterative
+    # 2.5-sigma trimming, three rounds; every dropped step is counted and
+    # published so nothing disappears silently.
     fit = least_squares(rows, targets)
+    kept = list(range(len(rows)))
+    trimmed = 0
+    for _ in range(3):
+        fit = least_squares([rows[j] for j in kept], [targets[j] for j in kept])
+        a, c_s, d = fit.params
+        residuals = {j: abs(targets[j] - (a * rows[j][0] + c_s * rows[j][1] + d)) for j in kept}
+        spread = (fit.residual_sum_squares / len(kept)) ** 0.5
+        survivors = [j for j in kept if residuals[j] <= 2.5 * spread]
+        if len(survivors) == len(kept):
+            break
+        trimmed += len(kept) - len(survivors)
+        kept = survivors
+        if len(kept) < MIN_PASSIVE_STEPS:
+            return PassiveFit(
+                a=0.0,
+                c_s=0.0,
+                d=0.0,
+                steps=len(kept),
+                trimmed=trimmed,
+                message=(
+                    f"le tri des heures aberrantes ne laisse que {len(kept)} étapes "
+                    f"(il en faut {MIN_PASSIVE_STEPS})"
+                ),
+            )
     a, c_s, d = fit.params
     if a <= 0:
         return PassiveFit(
@@ -121,16 +151,26 @@ def fit_passive(
             c_s=c_s,
             d=d,
             stderrs=fit.stderr,
-            steps=len(rows),
+            steps=len(kept),
+            trimmed=trimmed,
             message=f"déperditions non physiques (a = {a:.4f})",
         )
-    rmse = (fit.residual_sum_squares / len(rows)) ** 0.5
+    rmse = (fit.residual_sum_squares / len(kept)) ** 0.5
     _LOGGER.debug(
-        "Thermal Model: passive fit a=%.5f c_s=%.5f d=%+.4f on %s steps (rmse %.3f K/h)",
+        "Thermal Model: passive fit a=%.5f c_s=%.5f d=%+.4f on %s steps, %s trimmed (rmse %.3f)",
         a,
         c_s,
         d,
-        len(rows),
+        len(kept),
+        trimmed,
         rmse,
     )
-    return PassiveFit(a=a, c_s=c_s, d=d, stderrs=fit.stderr, steps=len(rows), rmse_k_per_h=rmse)
+    return PassiveFit(
+        a=a,
+        c_s=c_s,
+        d=d,
+        stderrs=fit.stderr,
+        steps=len(kept),
+        trimmed=trimmed,
+        rmse_k_per_h=rmse,
+    )
