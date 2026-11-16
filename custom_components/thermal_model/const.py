@@ -28,6 +28,7 @@ CONF_HEATING_POWER_SENSOR: Final = "heating_power_sensor"
 CONF_RATED_POWER: Final = "rated_power"
 CONF_COP: Final = "cop"
 CONF_IRRADIANCE_SENSOR: Final = "irradiance_sensor"
+CONF_FACADE_BEARING: Final = "facade_bearing"
 
 # Identification window (step 3)
 CONF_HISTORY_DAYS: Final = "history_days"

@@ -121,7 +121,12 @@ def statistics_reader(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[datetim
         }
 
     async def fake_past_weather(
-        session: Any, *, latitude: float, longitude: float, days: int
+        session: Any,
+        *,
+        latitude: float,
+        longitude: float,
+        days: int,
+        facade_bearing: float = 180.0,
     ) -> list[Any]:
         class Step:
             def __init__(self, time: datetime) -> None:

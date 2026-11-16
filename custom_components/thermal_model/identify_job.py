@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant
 
 from . import ThermalModelRuntimeData
 from .const import (
+    CONF_FACADE_BEARING,
     CONF_HEATING_POWER_SENSOR,
     CONF_IRRADIANCE_SENSOR,
     CONF_LATITUDE,
@@ -144,6 +145,9 @@ async def async_identify_model(
     longitude = float(
         options.get(CONF_LONGITUDE, entry_data.get(CONF_LONGITUDE, hass.config.longitude))
     )
+    facade_bearing = float(
+        options.get(CONF_FACADE_BEARING, entry_data.get(CONF_FACADE_BEARING, 180.0))
+    )
 
     # The heating meter is a configuration decision, never a guess.
     chosen_by_user = options.get(CONF_HEATING_POWER_SENSOR) or entry_data.get(
@@ -160,6 +164,7 @@ async def async_identify_model(
         or entry_data.get(CONF_IRRADIANCE_SENSOR),
         latitude=latitude,
         longitude=longitude,
+        facade_bearing=facade_bearing,
         settings=ident_settings,
         runtime_tunables=runtime.tunables,
     )

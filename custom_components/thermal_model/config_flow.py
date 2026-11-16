@@ -14,6 +14,7 @@ from homeassistant.util import slugify
 from .const import (
     CONF_DT_MINUTES,
     CONF_DT_STORAGE_MINUTES,
+    CONF_FACADE_BEARING,
     CONF_HEATING_POWER_SENSOR,
     CONF_HISTORY_DAYS,
     CONF_INDOOR_SENSOR,
@@ -200,6 +201,25 @@ def _sources_schema(defaults: dict[str, Any]) -> vol.Schema:
         fields[vol.Optional(key, description={"suggested_value": current} if current else None)] = (
             entity_selector
         )
+    # The direction the main glazing faces, as a compass bearing read against the
+    # windows (180 = due south). A compass against the glass beats any guess: on
+    # the real installation the "south" bays actually face 220°, which moves the
+    # solar peak into the mid-afternoon.
+    current_bearing = defaults.get(CONF_FACADE_BEARING)
+    fields[
+        vol.Optional(
+            CONF_FACADE_BEARING,
+            description={"suggested_value": current_bearing} if current_bearing else None,
+        )
+    ] = selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0,
+            max=359,
+            step=1,
+            mode=selector.NumberSelectorMode.BOX,
+            unit_of_measurement="°",
+        )
+    )
     return vol.Schema(fields)
 
 

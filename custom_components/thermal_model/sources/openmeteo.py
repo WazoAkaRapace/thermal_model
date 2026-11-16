@@ -36,6 +36,7 @@ def _facade_solar(
     *,
     latitude: float,
     longitude: float,
+    facade_bearing: float = 180.0,
 ) -> float:
     """The irradiance on a south facade; the horizontal value only as a fallback.
 
@@ -52,6 +53,7 @@ def _facade_solar(
             diffuse_horizontal=float(diffuse) or 0.0,
             latitude=latitude,
             longitude=longitude,
+            facade_azimuth_deg=facade_bearing - 180.0,
         )
     return float(horizontal or 0.0)
 
@@ -70,6 +72,7 @@ async def fetch_weather(
     hours: int,
     model: str,
     now: datetime | None = None,
+    facade_bearing: float = 180.0,
 ) -> list[WeatherStep]:
     """Fetch the next ``hours`` hourly steps for one weather model."""
     if hours <= 0:
@@ -128,6 +131,7 @@ async def fetch_weather(
                     radiation[index] if index < len(radiation) else None,
                     latitude=latitude,
                     longitude=longitude,
+                    facade_bearing=facade_bearing,
                 ),
             )
         )
@@ -152,6 +156,7 @@ async def fetch_past_weather(
     latitude: float,
     longitude: float,
     days: int,
+    facade_bearing: float = 180.0,
 ) -> list[WeatherStep]:
     """Past hourly weather (temperature and irradiance) for the identification.
 
@@ -205,6 +210,7 @@ async def fetch_past_weather(
                     radiation[index] if index < len(radiation) else None,
                     latitude=latitude,
                     longitude=longitude,
+                    facade_bearing=facade_bearing,
                 ),
             )
         )

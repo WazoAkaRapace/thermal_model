@@ -156,6 +156,7 @@ async def _solar_series(
     irradiance_sensor: str | None,
     latitude: float,
     longitude: float,
+    facade_bearing: float = 180.0,
 ) -> tuple[list[float], str, str | None]:
     """Hourly irradiance for the given hours."""
     if irradiance_sensor:
@@ -173,6 +174,7 @@ async def _solar_series(
             latitude=latitude,
             longitude=longitude,
             days=days,
+            facade_bearing=facade_bearing,
         )
     except WeatherError as err:
         return [0.0] * len(hours), "unavailable", str(err)
@@ -194,6 +196,7 @@ async def build_inputs(
     irradiance_sensor: str | None = None,
     latitude: float = 0.0,
     longitude: float = 0.0,
+    facade_bearing: float = 180.0,
     settings: IdentificationSettings | None = None,
     runtime_tunables: dict[str, float] | None = None,
 ) -> tuple[ModelInputs, Any]:
@@ -267,6 +270,7 @@ async def build_inputs(
         irradiance_sensor,
         latitude,
         longitude,
+        facade_bearing,
     )
     if solar_error:
         inputs.reasons.append(f"irradiance indisponible : {solar_error}")

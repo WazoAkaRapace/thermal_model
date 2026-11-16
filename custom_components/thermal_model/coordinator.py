@@ -30,6 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from . import ModelSettings, SourceBinding, ThermalModelRuntimeData
 from .const import (
+    CONF_FACADE_BEARING,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_WEATHER_MODELS,
@@ -310,6 +311,12 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
         )
         return float(latitude), float(longitude)
 
+    def _facade_bearing(self) -> float:
+        bearing = self.entry.options.get(
+            CONF_FACADE_BEARING, self.entry.data.get(CONF_FACADE_BEARING, 180.0)
+        )
+        return float(bearing)
+
     # -- main loop -------------------------------------------------------
     async def _async_update_data(self) -> ForecastBundle:
         indoor = self._state_float(self.sources.indoor_sensor)
@@ -336,6 +343,7 @@ class ThermalModelCoordinator(DataUpdateCoordinator[ForecastBundle]):
                     hours=horizon,
                     model=self._weather_model(),
                     now=now,
+                    facade_bearing=self._facade_bearing(),
                 )
                 self._weather_cache = (now, list(weather), self._weather_model())
             except WeatherError as err:
