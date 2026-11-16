@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -390,14 +391,14 @@ async def test_short_statistics_do_not_mask_ten_days_of_raw_history(
     data["sensor.indoor_temperature"] = dict(points[-20:])
 
     setup_entry.runtime_data.options["heating_power_sensor"] = PAC
-    import custom_components.thermal_model.model_inputs as mi
+    import custom_components.thermal_model.sources.recorder as recorder_module
 
-    async def fake_series_for(hass_, sensor, days):
-        if sensor == "sensor.indoor_temperature":
-            return dict(points)
-        return statistics_reader.get(sensor) or {}
+    async def fake_collect(hass_, sensors, days, step_minutes=60):
+        if "sensor.indoor_temperature" in sensors:
+            return {"sensor.indoor_temperature": SimpleNamespace(points=tuple(points))}
+        return {}
 
-    monkeypatch.setattr(mi, "_series_for_sensor", fake_series_for)
+    monkeypatch.setattr(recorder_module, "async_collect", fake_collect)
 
     await setup_entry.runtime_data.coordinator.async_identify()
     await hass.async_block_till_done()

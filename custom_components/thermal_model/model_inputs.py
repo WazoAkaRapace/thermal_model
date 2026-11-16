@@ -120,14 +120,21 @@ async def _series_for_sensor(hass: HomeAssistant, sensor: str, days: int) -> dic
 
     series = await async_read_statistics(hass, [sensor], days)
     points = _points(series).get(sensor) or {}
-    if points:
-        return points
+    if len(points) >= 24 * MIN_INDOOR_DAYS:
+        return points  # a full record already: no reason to walk the raw states
 
+    # Short statistics (a sensor that just gained ``state_class`` serves hours,
+    # not days) must not mask the raw history: read both and merge, statistics
+    # winning on overlap. Measured on the real installation: 20 h of statistics
+    # hid ten days of recorded states and the identification refused.
     collected = await async_collect(hass, [sensor], days, step_minutes=60)
     history = collected.get(sensor)
     if history is None:
-        return {}
-    return {moment: value for moment, value in history.points if value is not None}
+        return points
+    raw = {moment: value for moment, value in history.points if value is not None}
+    if len(raw) <= len(points):
+        return points
+    return {**raw, **points}
 
 
 def _mean_series(series: dict[str, dict[datetime, float]]) -> tuple[list[datetime], list[float]]:
