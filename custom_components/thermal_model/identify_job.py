@@ -27,6 +27,7 @@ from .const import (
     ReasonCode,
 )
 from .core.identify import IdentificationSettings
+from .core.passive import PassiveFit, fit_passive
 from .core.simulate import ThermalParams
 from .model_inputs import build_inputs
 
@@ -59,6 +60,11 @@ class IdentificationOutcome:
     k_stderr: float | None = None
     k_days: int = 0
     k_energy_kwh: float = 0.0
+    passive_steps: int = 0
+    passive_rmse: float | None = None
+    a_stderr: float | None = None
+    c_s_stderr: float | None = None
+    d_stderr: float | None = None
     k_alpha: float | None = None
     k_alpha_stderr: float | None = None
     k_reference_temperature: float | None = None
@@ -92,6 +98,13 @@ class IdentificationOutcome:
             "k_standard_error": (None if self.k_stderr is None else round(self.k_stderr, 4)),
             "k_days": self.k_days,
             "k_energy_kwh": round(self.k_energy_kwh, 2),
+            "passive_steps": self.passive_steps,
+            "passive_rmse_k_per_h": (
+                None if self.passive_rmse is None else round(self.passive_rmse, 4)
+            ),
+            "a_stderr": None if self.a_stderr is None else round(self.a_stderr, 5),
+            "c_s_stderr": None if self.c_s_stderr is None else round(self.c_s_stderr, 6),
+            "d_stderr": None if self.d_stderr is None else round(self.d_stderr, 5),
             "k_alpha": (None if self.k_alpha is None else round(self.k_alpha, 4)),
             "k_alpha_stderr": (
                 None if self.k_alpha_stderr is None else round(self.k_alpha_stderr, 4)
@@ -150,8 +163,28 @@ async def async_identify_model(
     )
 
     notes = tuple(inputs.reasons)
-    if result is not None and getattr(result, "params", None) is not None:
-        pass  # alpha note handled below via inputs.daily_k
+
+    # The free-float coefficients come from the passive steps alone — day and night:
+    # the daytime solar rise is what separates c_s from d. Fitting d on night steps
+    # (the previous behaviour) let it absorb the constant share of a dual-service
+    # heat pump's meter: measured +0.061 K/h published against +0.021 ± 0.044 on
+    # passive steps, a free-float lift of +4.8 K that the house never had.
+    passive_fit: PassiveFit | None = None
+    if inputs.heating_kw and inputs.tin:
+        passive_fit = fit_passive(inputs.tin, inputs.tout, inputs.solar, inputs.heating_kw)
+        if passive_fit.ok and result is not None and result.params is not None:
+            result = replace(
+                result,
+                params=replace(
+                    result.params,
+                    a=passive_fit.a,
+                    c_s=passive_fit.c_s,
+                    d=passive_fit.d,
+                ),
+            )
+        elif passive_fit.message:
+            notes = (*notes, f"ajustement du régime libre impossible : {passive_fit.message}")
+
     _daily = inputs.daily_k
     if _daily is not None and _daily.alpha_note and result is not None:
         notes = (*notes, _daily.alpha_note)
@@ -245,6 +278,11 @@ async def async_identify_model(
         k_stderr=daily.stderr if daily is not None else None,
         k_days=daily.days if daily is not None else 0,
         k_energy_kwh=daily.total_kwh if daily is not None else 0.0,
+        passive_steps=passive_fit.steps if passive_fit is not None else 0,
+        passive_rmse=passive_fit.rmse_k_per_h if passive_fit is not None else None,
+        a_stderr=passive_fit.stderrs[0] if passive_fit and passive_fit.stderrs else None,
+        c_s_stderr=passive_fit.stderrs[1] if passive_fit and len(passive_fit.stderrs) > 1 else None,
+        d_stderr=passive_fit.stderrs[2] if passive_fit and len(passive_fit.stderrs) > 2 else None,
         k_alpha=daily.alpha if daily is not None else None,
         k_alpha_stderr=daily.alpha_stderr if daily is not None else None,
         k_reference_temperature=(daily.reference_temperature if daily is not None else None),

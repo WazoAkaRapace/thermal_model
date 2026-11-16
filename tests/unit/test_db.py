@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -78,8 +79,14 @@ def test_before_excludes_the_run_itself(tmp_path: Path) -> None:
     assert older[0].issued_at == START - timedelta(hours=6)
 
 
-def test_prune_keeps_recent_runs_and_thins_old_days(tmp_path: Path) -> None:
-    """Retention must bound the file without emptying the comparison window."""
+def test_prune_keeps_recent_runs_and_thins_old_days(tmp_path: Path, freezer: Any) -> None:
+    """Retention must bound the file without emptying the comparison window.
+
+    Frozen at a fixed midday instant: with a wall-clock "now", the twelve runs spread
+    over 30 days minus 0-11 hours straddle midnight when the test runs in the evening,
+    and the expected count changes with the time of day.
+    """
+    freezer.move_to(datetime(2026, 11, 16, 12, 0, tzinfo=UTC))
     store = Database(tmp_path / "runs.db")
     now = datetime.now(UTC)
     for hour in range(10):  # 10 runs today: all kept
