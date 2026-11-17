@@ -55,7 +55,8 @@ const CSS = `
   .row { display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; }
   .stat { display: flex; flex-direction: column; min-width: 92px; }
   .stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--secondary-text-color); }
-  .stat .v { font-size: 1.25rem; font-weight: 500; color: var(--primary-text-color); }
+  .stat .v { font-size: 1.25rem; font-weight: 500; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
+  .stat .v small { display: block; font-size: 0.72rem; font-weight: 400; color: var(--secondary-text-color); margin-top: 1px; }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;

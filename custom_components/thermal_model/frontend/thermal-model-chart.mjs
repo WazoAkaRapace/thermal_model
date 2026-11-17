@@ -350,7 +350,7 @@ export function toSeriesData(x, series) {
  */
 export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
   const series = toSeriesData(x, panel.series);
-  const textColor = dark ? "#b0b0b0" : "#5f6368";
+  const textColor = dark ? "#c7c7c7" : "#4a4f57";
   const gridColor = dark ? "#333" : "#e0e0e0";
 
   return {
@@ -369,7 +369,7 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
     series,
     colors: series.map((entry) => entry.color),
     fill: {
-      opacity: panel.series.map((entry) => (entry.band ? 0.15 : 1)),
+      opacity: panel.series.map((entry) => (entry.band ? 0.22 : 1)),
     },
     stroke: {
       curve: "smooth",
@@ -378,7 +378,13 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
     },
     markers: { size: 0, hover: { size: 4 }, strokeWidth: 0 },
     dataLabels: { enabled: false },
-    grid: { borderColor: gridColor, strokeDashArray: 3, padding: { left: 4, right: 8 } },
+    grid: {
+      borderColor: gridColor,
+      strokeDashArray: 3,
+      // the rotated y-axis title ("°C") is drawn inside the left padding: 4px
+      // clipped it to "°" on the rendered panel
+      padding: { left: 10, right: 10 },
+    },
     xaxis: {
       type: "datetime",
       labels: {
@@ -392,6 +398,11 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
     yaxis: {
       title: {
         text: panel.unit,
+        // horizontal above the ticks: the rotated variant clipped to "°" at
+        // the card's left edge no matter the grid padding
+        rotate: 0,
+        offsetX: -6,
+        offsetY: -110,
         style: { color: textColor, fontSize: "11px", fontWeight: 600 },
       },
       labels: {
@@ -432,6 +443,8 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
           label: {
             text: "maintenant",
             borderWidth: 0,
+            borderRadius: 4,
+            padding: { left: 5, right: 5, top: 3, bottom: 3 },
             style: { background: "#e53935", color: "#fff", fontSize: "10px" },
           },
         },

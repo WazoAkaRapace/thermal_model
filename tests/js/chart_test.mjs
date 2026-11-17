@@ -285,8 +285,8 @@ equal(
 );
 equal(
   options.fill.opacity[options.series.findIndex((entry) => entry.type === "rangeArea")],
-  0.15,
-  "the band must be translucent",
+  0.22,
+  "the band must be translucent but readable on a dark card (0.22)",
 );
 equal(options.series[0].color, COLORS.measured, "series colours must be passed through");
 equal(options.tooltip.shared, true, "the tooltip must list every series at once");
