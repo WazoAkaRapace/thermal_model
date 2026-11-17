@@ -27,6 +27,7 @@ from .const import (
     Identifiability,
     ReasonCode,
 )
+from .core.holdout import HoldoutResult, evaluate_holdout
 from .core.identify import IdentificationSettings
 from .core.passive import PassiveFit, fit_passive
 from .core.simulate import ThermalParams
@@ -63,6 +64,7 @@ class IdentificationOutcome:
     k_energy_kwh: float = 0.0
     passive_steps: int = 0
     passive_trimmed: int = 0
+    holdout: HoldoutResult | None = None
     passive_rmse: float | None = None
     a_stderr: float | None = None
     c_s_stderr: float | None = None
@@ -102,6 +104,12 @@ class IdentificationOutcome:
             "k_energy_kwh": round(self.k_energy_kwh, 2),
             "passive_steps": self.passive_steps,
             "passive_trimmed_steps": self.passive_trimmed,
+            "holdout_min_bias_k": None if self.holdout is None else self.holdout.min_bias_k,
+            "holdout_min_mae_k": None if self.holdout is None else self.holdout.min_mae_k,
+            "holdout_min_max_err_k": (None if self.holdout is None else self.holdout.min_max_err_k),
+            "holdout_time_err_h": None if self.holdout is None else self.holdout.time_err_mean_h,
+            "holdout_stretches": 0 if self.holdout is None else self.holdout.stretches,
+            "holdout_note": None if self.holdout is None else self.holdout.message,
             "passive_rmse_k_per_h": (
                 None if self.passive_rmse is None else round(self.passive_rmse, 4)
             ),
@@ -177,8 +185,13 @@ async def async_identify_model(
     # heat pump's meter: measured +0.061 K/h published against +0.021 ± 0.044 on
     # passive steps, a free-float lift of +4.8 K that the house never had.
     passive_fit: PassiveFit | None = None
+    holdout: HoldoutResult | None = None
     if inputs.heating_kw and inputs.tin:
         passive_fit = fit_passive(inputs.tin, inputs.tout, inputs.solar, inputs.heating_kw)
+        # The model's report card: replay the last three days it never saw.
+        holdout = evaluate_holdout(inputs.tin, inputs.tout, inputs.solar, inputs.heating_kw)
+        if holdout.message:
+            notes = (*notes, f"erreur hold-out non mesurable : {holdout.message}")
         if passive_fit.ok and result is not None and result.params is not None:
             result = replace(
                 result,
@@ -287,6 +300,7 @@ async def async_identify_model(
         k_energy_kwh=daily.total_kwh if daily is not None else 0.0,
         passive_steps=passive_fit.steps if passive_fit is not None else 0,
         passive_trimmed=passive_fit.trimmed if passive_fit is not None else 0,
+        holdout=holdout,
         passive_rmse=passive_fit.rmse_k_per_h if passive_fit is not None else None,
         a_stderr=passive_fit.stderrs[0] if passive_fit and passive_fit.stderrs else None,
         c_s_stderr=passive_fit.stderrs[1] if passive_fit and len(passive_fit.stderrs) > 1 else None,

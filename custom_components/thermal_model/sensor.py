@@ -167,6 +167,14 @@ class ScenarioForecastSensor(ThermalModelEntity, SensorEntity):
             return None
         return round(run.values[1], 1)
 
+    def _holdout(self) -> tuple[float | None, float | None]:
+        """(band, bias) measured by the last identification's hold-out replay."""
+        identification = getattr(self.runtime, "identification", None)
+        holdout = getattr(identification, "holdout", None)
+        if holdout is None or not holdout.ok:
+            return None, None
+        return holdout.min_mae_k, holdout.min_bias_k
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """The trajectory itself, plus the earlier runs and the weather it used."""
@@ -174,6 +182,7 @@ class ScenarioForecastSensor(ThermalModelEntity, SensorEntity):
         run = self.run
         if bundle is None or run is None:
             return {"scenario": str(self.scenario)}
+        band, bias = self._holdout()
 
         archived = bundle.history.get(str(self.scenario), ())
         return {
@@ -193,6 +202,12 @@ class ScenarioForecastSensor(ThermalModelEntity, SensorEntity):
             "outdoor_temperature_now": bundle.outdoor_temperature,
             "minimum": round(run.minimum, 2),
             "minimum_at": run.minimum_at.isoformat(),
+            # The model's own measured error: band around the trajectory, bias
+            # of the predicted minimum. The honest announcement is
+            # minimum - bias, with the band as tolerance.
+            "uncertainty_k": band,
+            "min_bias_k": bias,
+            "minimum_corrected": (None if bias is None else round(run.minimum - bias, 2)),
             "stale": bundle.stale,
             "error": bundle.error,
             # Trajectory, ready for apexcharts data_generator

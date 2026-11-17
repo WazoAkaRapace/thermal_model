@@ -410,7 +410,18 @@ class ThermalModelPanel extends HTMLElement {
     this._setText(
       this._nodes.min,
       "min",
-      summary.minimum !== null ? `${summary.minimum.toFixed(1)} °C` : "—",
+      (() => {
+        const attrs = forecasts.free_float || {};
+        const bias = Number.parseFloat(attrs.min_bias_k);
+        if (
+          summary.minimum !== null &&
+          Number.isFinite(bias) &&
+          Math.abs(bias) >= 0.05
+        ) {
+          return `${(summary.minimum - bias).toFixed(1)} °C <small>(${summary.minimum.toFixed(1)} − biais ${bias.toFixed(1)})</small>`;
+        }
+        return summary.minimum !== null ? `${summary.minimum.toFixed(1)} °C` : "—";
+      })(),
     );
     this._setText(
       this._nodes.max,

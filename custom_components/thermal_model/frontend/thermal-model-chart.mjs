@@ -221,6 +221,33 @@ export function buildChartData({ history, forecasts, nowMs }) {
         width: 2,
         values,
       });
+      // The model's own measured error, drawn as a band around the free float:
+      // the honest reading of the trajectory is "somewhere in here".
+      const band = Number.parseFloat(attributes.uncertainty_k);
+      if (scenario === "free_float" && Number.isFinite(band) && band > 0) {
+        const upper = values.map((v) => (v === null ? null : v + band));
+        const lower = values.map((v) => (v === null ? null : v - band));
+        series.push({
+          id: "free_float_band_hi",
+          label: "Incertitude +",
+          color,
+          scale: "y",
+          width: 1,
+          dash: [4, 4],
+          values: upper,
+          hideLegend: true,
+        });
+        series.push({
+          id: "free_float_band_lo",
+          label: "Incertitude −",
+          color,
+          scale: "y",
+          width: 1,
+          dash: [4, 4],
+          values: lower,
+          hideLegend: true,
+        });
+      }
     }
 
     for (const [position, run] of (attributes.archived_runs || []).entries()) {
