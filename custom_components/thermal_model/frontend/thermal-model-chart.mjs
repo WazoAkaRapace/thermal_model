@@ -221,31 +221,18 @@ export function buildChartData({ history, forecasts, nowMs }) {
         width: 2,
         values,
       });
-      // The model's own measured error, drawn as a band around the free float:
+      // The model's own measured error, as a native ApexCharts rangeArea band:
       // the honest reading of the trajectory is "somewhere in here".
       const band = Number.parseFloat(attributes.uncertainty_k);
       if (scenario === "free_float" && Number.isFinite(band) && band > 0) {
-        const upper = values.map((v) => (v === null ? null : v + band));
-        const lower = values.map((v) => (v === null ? null : v - band));
         series.push({
-          id: "free_float_band_hi",
-          label: "Incertitude +",
+          id: "free_float_band",
+          label: "Incertitude",
           color,
           scale: "y",
-          width: 1,
-          dash: [4, 4],
-          values: upper,
-          hideLegend: true,
-        });
-        series.push({
-          id: "free_float_band_lo",
-          label: "Incertitude −",
-          color,
-          scale: "y",
-          width: 1,
-          dash: [4, 4],
-          values: lower,
-          hideLegend: true,
+          width: 0,
+          band: true,
+          values: values.map((v) => (v === null ? null : [v - band, v + band])),
         });
       }
     }
@@ -257,6 +244,23 @@ export function buildChartData({ history, forecasts, nowMs }) {
       ]);
       const archivedValues = alignPoints(archivedPoints, index);
       if (!archivedValues) continue;
+      // Band around the LATEST archived run only: the "yesterday vs reality"
+      // reading is about that run, and three overlapping bands are ink, not
+      // information. The band is the model's current measured error.
+      const currentBand = Number.parseFloat(attributes.uncertainty_k);
+      if (position === 0 && Number.isFinite(currentBand) && currentBand > 0) {
+        series.push({
+          id: `${scenario}:archived:${position}:band`,
+          label: "Incertitude",
+          color: COLORS[scenario] || COLORS.fallback,
+          scale: "y",
+          width: 0,
+          band: true,
+          values: archivedValues.map((v) =>
+            v === null ? null : [v - currentBand, v + currentBand],
+          ),
+        });
+      }
       series.push({
         id: `${scenario}:archived:${position}`,
         label: `${label} — prévu il y a ${formatAge(run.age_hours)}`,
@@ -317,15 +321,22 @@ export function toSeriesData(x, series) {
     const data = [];
     for (let index = 0; index < x.length; index += 1) {
       const value = entry.values[index];
+      if (entry.band) {
+        if (!Array.isArray(value)) continue;
+        data.push([x[index] * 1000, value]);
+        continue;
+      }
       if (value === null || value === undefined || !Number.isFinite(value)) continue;
       data.push([x[index] * 1000, value]);
     }
-    return {
+    const out = {
       name: entry.label,
       data,
       color: entry.color,
       dash: Boolean(entry.dash),
     };
+    if (entry.band) out.type = "rangeArea";
+    return out;
   });
 }
 
@@ -357,6 +368,9 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
     },
     series,
     colors: series.map((entry) => entry.color),
+    fill: {
+      opacity: panel.series.map((entry) => (entry.band ? 0.15 : 1)),
+    },
     stroke: {
       curve: "smooth",
       width: panel.series.map((entry) => entry.width || 2),
@@ -400,7 +414,14 @@ export function buildPanelOptions(panel, x, { nowMs, dark = false } = {}) {
       intersect: false,
       theme: dark ? "dark" : "light",
       x: { format: "ddd HH:mm" },
-      y: { formatter: (value) => (Number.isFinite(value) ? `${value.toFixed(1)} ${panel.unit}` : "") },
+      y: {
+        formatter: (value) => {
+          if (Array.isArray(value)) {
+            return `${value[0].toFixed(1)} – ${value[1].toFixed(1)} ${panel.unit}`;
+          }
+          return Number.isFinite(value) ? `${value.toFixed(1)} ${panel.unit}` : "";
+        },
+      },
     },
     annotations: {
       xaxis: [
@@ -429,9 +450,19 @@ export function buildPanels({ history, forecasts, nowMs, primaryScenario, maxArc
   // One scenario only: comparing three runs of one model is a reading;
   // comparing six runs of two models in one plot is a tangle.
   const primary = primaryScenario || Object.keys(forecasts)[0];
-  const archived = indoor
-    .filter((entry) => entry.id.includes(ARCHIVED_PREFIX) && entry.id.startsWith(`${primary}:`))
-    .slice(0, maxArchived);
+  const archivedAll = indoor.filter(
+    (entry) => entry.id.includes(ARCHIVED_PREFIX) && entry.id.startsWith(`${primary}:`),
+  );
+  // The slice limits *runs*, not bands: a translucent rangeArea around the
+  // latest run is background, not a fourth curve to read.
+  const archivedRuns = archivedAll.filter((entry) => !entry.band).slice(0, maxArchived);
+  const keptRunIds = new Set(archivedRuns.map((entry) => entry.id));
+  const archived = [
+    ...archivedRuns,
+    ...archivedAll.filter(
+    (entry) => entry.band && keptRunIds.has(entry.id.replace(/:band$/, "")),
+  ),
+  ];
 
   const panels = [];
   if (current.length) {

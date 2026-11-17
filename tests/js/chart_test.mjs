@@ -82,12 +82,16 @@ const forecasts = {
       { issued_at: iso(-6), age_hours: 6, times: [-6, -5, -4].map(iso), values: [20.9, 20.7, 20.5] },
     ],
   ),
+  // même entité, avec l'erreur mesurée publiée par le hold-out
+  ...{},
   thermostat: forecast(
     "thermostat",
     Array.from({ length: 4 }, (_, index) => 21.0 - index * 0.1),
     [],
   ),
 };
+forecasts.free_float.uncertainty_k = 1.0;
+forecasts.free_float.min_bias_k = 0.9;
 
 // -- data -------------------------------------------------------------
 const data = buildChartData({ history, forecasts, nowMs: NOW });
@@ -149,7 +153,7 @@ check(
   "the measured series must be null inside a real hole",
 );
 
-const archived = data.series.find((entry) => entry.id.includes(ARCHIVED_PREFIX));
+const archived = data.series.find((entry) => entry.id.includes(ARCHIVED_PREFIX) && !entry.band);
 check(Boolean(archived), "archived run was not turned into a series");
 equal(
   archived.values[data.x.indexOf(Math.round((NOW - 6 * HOUR) / 1000))],
@@ -190,17 +194,25 @@ check(panels.every((panel) => panel.unit === "°C"), "every panel must carry its
 const panelById = Object.fromEntries(panels.map((panel) => [panel.id, panel]));
 equal(
   panelById.indoor.series.map((entry) => entry.id).sort(),
-  ["free_float", "measured", "thermostat"],
-  "the indoor panel must hold the current trajectories only",
+  ["free_float", "free_float_band", "measured", "thermostat"],
+  "the indoor panel must hold the current trajectories and their measured band",
 );
 check(
   !panelById.indoor.series.some((entry) => entry.scale === "out"),
   "the outdoor series must not share the indoor panel",
 );
 equal(
-  panelById.past.series.filter((entry) => entry.id.includes(ARCHIVED_PREFIX)).length,
+  panelById.past.series.filter(
+    (entry) => entry.id.includes(ARCHIVED_PREFIX) && !entry.band,
+  ).length,
   1,
   "the past panel must hold the archived runs",
+);
+check(
+  panelById.past.series.some(
+    (entry) => entry.band && entry.id.endsWith(":band"),
+  ),
+  "the past panel must show the band around the latest archived run",
 );
 check(
   panelById.past.series.some((entry) => entry.id === "measured"),
@@ -212,20 +224,49 @@ equal(
   "the outdoor panel must hold both outdoor series",
 );
 check(
-  panels.every((panel) => panel.series.length <= 4),
-  "a panel with more than four series stops being readable",
+  panels.every(
+    (panel) => panel.series.filter((entry) => !entry.band).length <= 4,
+  ),
+  "a panel with more than four curves stops being readable (bands do not count: they are background)",
 );
 
 // -- ApexCharts options ------------------------------------------------
+const band = data.series.find((entry) => entry.id === "free_float_band");
+check(band !== undefined, "the measured uncertainty must produce a band series");
+check(
+  band.values.every((v) => v === null || (Array.isArray(v) && v[1] - v[0] === 2.0)),
+  `the band must be value ± uncertainty (got ${JSON.stringify(band.values)})`,
+);
+const archivedBand = data.series.find((entry) => entry.band && entry.id.endsWith(":band"));
+check(
+  archivedBand !== undefined,
+  "the latest archived run must carry a band for 'yesterday vs reality'",
+);
+
 const seriesData = toSeriesData(data.x, panelById.indoor.series);
-check(seriesData.length === 3, "toSeriesData must keep every series");
+check(seriesData.length === 4, "toSeriesData must keep every series");
+const bandAsApex = toSeriesData(data.x, [band])[0];
+check(
+  bandAsApex.type === "rangeArea",
+  "the band must use the native ApexCharts rangeArea type",
+);
+check(
+  bandAsApex.data[0][1][1] - bandAsApex.data[0][1][0] === 2.0,
+  "the rangeArea data points must be [x, [lo, hi]] pairs",
+);
 check(
   seriesData.every((entry) => entry.data.every(([ms]) => ms > 1.6e12)),
   "series points must be milliseconds",
 );
 check(
-  seriesData.every((entry) => entry.data.every(([, value]) => Number.isFinite(value))),
-  "nulls must be dropped, never plotted as a value",
+  seriesData.every((entry) =>
+    entry.data.every(([, value]) =>
+      Array.isArray(value)
+        ? value.every((part) => Number.isFinite(part))
+        : Number.isFinite(value),
+    ),
+  ),
+  "nulls must be dropped, never plotted as a value (bands carry finite pairs)",
 );
 
 const options = buildPanelOptions(panelById.indoor, data.x, { nowMs: NOW });
@@ -236,7 +277,17 @@ check(
 );
 equal(options.chart.animations.enabled, false, "animations would make the panel jump");
 equal(options.yaxis.title.text, "°C", "the y axis must carry its unit");
-equal(options.series.length, 3, "options must carry every series");
+equal(options.series.length, 4, "options must carry every series");
+equal(
+  options.series.filter((entry) => entry.type === "rangeArea").length,
+  1,
+  "the band must reach ApexCharts as a rangeArea",
+);
+equal(
+  options.fill.opacity[options.series.findIndex((entry) => entry.type === "rangeArea")],
+  0.15,
+  "the band must be translucent",
+);
 equal(options.series[0].color, COLORS.measured, "series colours must be passed through");
 equal(options.tooltip.shared, true, "the tooltip must list every series at once");
 equal(options.annotations.xaxis[0].x, NOW, "the 'now' marker annotation is missing");
