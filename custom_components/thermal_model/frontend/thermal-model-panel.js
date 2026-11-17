@@ -407,7 +407,9 @@ class ThermalModelPanel extends HTMLElement {
         ? `${summary.current.toFixed(1)} °C`
         : "—",
     );
-    this._setText(
+    // innerHTML here: the value mixes a big number and a small annotation.
+    // Every part is built by toFixed() on numbers — there is nothing to inject.
+    this._setHtml(
       this._nodes.min,
       "min",
       (() => {
