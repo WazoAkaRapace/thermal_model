@@ -261,7 +261,7 @@ class ThermalModelPanel extends HTMLElement {
     if (!x.length || !panels.length) {
       if (this._charts.size === 0) {
         this._setChartHost(
-          `<div class="card"><div class="empty">Aucune donnée à afficher pour l'instant.</div></div>`,
+          `<div class="card"><div class="empty">Pas encore de données : la première identification du modèle n'a peut-être pas tourné.</div></div>`,
         );
       }
       return;
@@ -307,15 +307,14 @@ class ThermalModelPanel extends HTMLElement {
         <div class="card">
           <div class="row" style="justify-content: space-between">
             <div>
-              <h1 data-title></h1>
-              <div class="sub">Mesuré, prévisions et prévisions passées sur la même échelle
-                <span data-engine></span></div>
+              <h1 data-title title=""></h1>
+              <div class="sub"><span data-engine></span></div>
             </div>
             <div class="row" style="gap: 14px">
               <div class="stat"><span class="k">Maintenant</span><span class="v" data-now>—</span></div>
               <div class="stat"><span class="k">Minimum prévu</span><span class="v" data-min>—</span></div>
               <div class="stat"><span class="k">Maximum prévu</span><span class="v" data-max>—</span></div>
-              <div class="stat"><span class="k">Émis</span><span class="v" style="font-size:1rem" data-issued>—</span></div>
+              <div class="stat"><span class="k">Calculée à</span><span class="v" style="font-size:1rem" data-issued>—</span></div>
               <div class="stat"><span class="k">Modèle météo</span><span class="v" style="font-size:1rem" data-weather>—</span></div>
               <span class="badge ok" data-badge>à jour</span>
             </div>
@@ -400,7 +399,8 @@ class ThermalModelPanel extends HTMLElement {
     const summary = summarise({ data, forecasts, nowMs });
 
     this._setText(this._nodes.title, "title", (this._panel && this._panel.title) || "Thermal Model");
-    this._setText(this._nodes.engine, "engine", `· ApexCharts ${APEXCHARTS_VERSION}`);
+    this._setText(this._nodes.engine, "engine", "");
+    this._nodes.title.title = `ApexCharts ${APEXCHARTS_VERSION}`;
     this._setText(
       this._nodes.now,
       "now",

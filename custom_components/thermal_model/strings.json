@@ -12,7 +12,7 @@
       },
       "sources": {
         "title": "Sources",
-        "description": "The three entities are enough to identify the thermal model. The two optional measurements make it better: a heating power meter measures k instead of estimating it, and an irradiance sensor replaces the weather archive for the solar gain.",
+        "description": "The indoor and outdoor sensors are enough to identify the model. The optional meter and irradiance sensor refine it.",
         "data": {
           "indoor_sensor": "Indoor temperature sensor",
           "outdoor_sensor": "Outdoor temperature sensor",
@@ -34,7 +34,7 @@
       },
       "reconfigure": {
         "title": "Thermal Model sources",
-        "description": "Change the heating entity or the temperature sensors.",
+        "description": "Change the temperature sensors.",
         "data": {
           "heating_entity": "Heating entity",
           "indoor_sensor": "Indoor temperature sensor",

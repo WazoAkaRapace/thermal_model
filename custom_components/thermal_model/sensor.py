@@ -119,7 +119,7 @@ class MeasuredTemperatureSensor(SensorEntity):
         """Say where the number comes from."""
         return {
             "source_entity": self._source,
-            "description": "Measured indoor temperature, mirrored for the dashboard",
+            "description": "Température intérieure mesurée, reprise du capteur lié",
         }
 
 

@@ -12,7 +12,7 @@
       },
       "sources": {
         "title": "Sources",
-        "description": "Les trois entités suffisent à identifier le modèle thermique. Les deux mesures facultatives l'améliorent : un compteur de puissance mesure le gain de chauffe au lieu de l'estimer, et un capteur d'ensoleillement remplace l'archive météo pour l'apport solaire.",
+        "description": "Les capteurs intérieur et extérieur suffisent à identifier le modèle. Le compteur et le capteur d'irradiance, facultatifs, l'affinent.",
         "data": {
           "indoor_sensor": "Capteur de température intérieure",
           "outdoor_sensor": "Capteur de température extérieure",
@@ -34,7 +34,7 @@
       },
       "reconfigure": {
         "title": "Sources du modèle thermique",
-        "description": "Modifier l'entité de chauffe ou les capteurs de température.",
+        "description": "Changer les capteurs de température.",
         "data": {
           "heating_entity": "Entité de chauffe",
           "indoor_sensor": "Capteur de température intérieure",
